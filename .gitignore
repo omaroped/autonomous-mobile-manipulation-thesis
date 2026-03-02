@@ -1,0 +1,71 @@
+# ============================
+# Thesis Project .gitignore
+# ============================
+
+# ----- OS files -----
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ----- IDE / Editor -----
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ----- Python -----
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+venv/
+env/
+
+# ----- ROS 2 build artifacts -----
+src/ros2_ws/build/
+src/ros2_ws/install/
+src/ros2_ws/log/
+
+# ----- Data (large files) -----
+data/raw/
+data/processed/
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# ----- Papers (copyright) -----
+references/papers/*.pdf
+!references/papers/.gitkeep
+
+# ----- LaTeX build artifacts -----
+docs/thesis/*.aux
+docs/thesis/*.log
+docs/thesis/*.out
+docs/thesis/*.toc
+docs/thesis/*.lof
+docs/thesis/*.lot
+docs/thesis/*.bbl
+docs/thesis/*.blg
+docs/thesis/*.fls
+docs/thesis/*.fdb_latexmk
+docs/thesis/*.synctex.gz
+docs/thesis/*.pdf
+
+# ----- Media (large files — track with Git LFS if needed) -----
+media/videos/*.mp4
+media/videos/*.avi
+media/videos/*.mkv
+!media/videos/.gitkeep
+
+# ----- Simulation artifacts -----
+simulation/**/*.log
+
+# ----- Misc -----
+*.bag
+*.db3
+*.mcap
