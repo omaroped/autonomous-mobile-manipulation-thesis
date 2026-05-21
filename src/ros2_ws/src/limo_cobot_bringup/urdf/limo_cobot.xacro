@@ -1,0 +1,45 @@
+<?xml version="1.0"?>
+<robot name="limo_cobot" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:include filename="$(find limo_car)/gazebo/ackermann.xacro" />
+  <xacro:include filename="$(find limo_car)/gazebo/sensor.xacro" />
+
+  <xacro:limo_ackermann />
+
+  <xacro:gazebo_laser frame_prefix="laser" />
+  <joint name="laser_joint" type="fixed">
+    <origin xyz="0.1236 0 -0.01" rpy="0 0 0"/>
+    <parent link="base_link"/>
+    <child link="laser_link"/>
+  </joint>
+
+  <xacro:gazebo_depth_camera frame_prefix="depth_camera" />
+  <joint name="depth_camera_joint" type="fixed">
+    <origin xyz="0.1 0 0.065" rpy="0 0 0"/>
+    <parent link="base_link"/>
+    <child link="depth_camera_link"/>
+  </joint>
+
+  <xacro:gazebo_imu frame_prefix="imu" />
+  <joint name="imu_joint" type="fixed">
+    <origin xyz="0.0 0 -0.1" rpy="0 0 0"/>
+    <parent link="base_link"/>
+    <child link="imu_link"/>
+  </joint>
+
+  <!-- Enable both the arm and the gripper -->
+  <xacro:include filename="$(find limo_cobot_bringup)/urdf/mycobot_280_m5_gazebo.xacro" />
+
+  <xacro:mycobot_280_m5_gazebo />
+
+  <joint name="arm_mount_joint" type="fixed">
+    <origin xyz="-0.03 0.0 0.025" rpy="0 0 0"/>
+    <parent link="base_link"/>
+    <child link="joint1"/>
+  </joint>
+
+  <xacro:include filename="$(find limo_cobot_bringup)/urdf/gripper.xacro" />
+
+  <xacro:adaptive_gripper parent_link="joint6_flange" />
+
+</robot>

@@ -1,0 +1,257 @@
+<?xml version="1.0" ?>
+<!--
+  Simple warehouse world for LIMO Cobot pick-and-place experiments.
+  Contains a ground plane, a table, and basic lighting.
+  
+  Author: Omar (Thesis)
+-->
+<sdf version="1.6">
+  <world name="simple_warehouse">
+
+    <!-- Physics -->
+    <physics type="ode">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+      <real_time_update_rate>1000</real_time_update_rate>
+    </physics>
+
+    <!-- Lighting -->
+    <include>
+      <uri>model://sun</uri>
+    </include>
+
+    <!-- Ground plane -->
+    <include>
+      <uri>model://ground_plane</uri>
+    </include>
+
+    <!-- Table 1 (with boxes) -->
+    <model name="table">
+      <static>true</static>
+      <pose>0.70 -0.22 0.15 0 0 0</pose>
+      <link name="table_link">
+        <collision name="table_top">
+          <geometry>
+            <box>
+              <size>0.3 0.4 0.02</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="table_top_visual">
+          <geometry>
+            <box>
+              <size>0.3 0.4 0.02</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.6 0.4 0.2 1</ambient>
+            <diffuse>0.6 0.4 0.2 1</diffuse>
+          </material>
+        </visual>
+        <!-- Table legs -->
+        <collision name="leg1">
+          <pose>0.10 0.15 -0.075 0 0 0</pose>
+          <geometry><cylinder><radius>0.015</radius><length>0.15</length></cylinder></geometry>
+        </collision>
+        <visual name="leg1_visual">
+          <pose>0.10 0.15 -0.075 0 0 0</pose>
+          <geometry><cylinder><radius>0.015</radius><length>0.15</length></cylinder></geometry>
+          <material><ambient>0.5 0.3 0.1 1</ambient><diffuse>0.5 0.3 0.1 1</diffuse></material>
+        </visual>
+        <collision name="leg2">
+          <pose>-0.10 0.15 -0.075 0 0 0</pose>
+          <geometry><cylinder><radius>0.015</radius><length>0.15</length></cylinder></geometry>
+        </collision>
+        <visual name="leg2_visual">
+          <pose>-0.10 0.15 -0.075 0 0 0</pose>
+          <geometry><cylinder><radius>0.015</radius><length>0.15</length></cylinder></geometry>
+          <material><ambient>0.5 0.3 0.1 1</ambient><diffuse>0.5 0.3 0.1 1</diffuse></material>
+        </visual>
+        <collision name="leg3">
+          <pose>0.10 -0.15 -0.075 0 0 0</pose>
+          <geometry><cylinder><radius>0.015</radius><length>0.15</length></cylinder></geometry>
+        </collision>
+        <visual name="leg3_visual">
+          <pose>0.10 -0.15 -0.075 0 0 0</pose>
+          <geometry><cylinder><radius>0.015</radius><length>0.15</length></cylinder></geometry>
+          <material><ambient>0.5 0.3 0.1 1</ambient><diffuse>0.5 0.3 0.1 1</diffuse></material>
+        </visual>
+        <collision name="leg4">
+          <pose>-0.10 -0.15 -0.075 0 0 0</pose>
+          <geometry><cylinder><radius>0.015</radius><length>0.15</length></cylinder></geometry>
+        </collision>
+        <visual name="leg4_visual">
+          <pose>-0.10 -0.15 -0.075 0 0 0</pose>
+          <geometry><cylinder><radius>0.015</radius><length>0.15</length></cylinder></geometry>
+          <material><ambient>0.5 0.3 0.1 1</ambient><diffuse>0.5 0.3 0.1 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Table 2 (Empty placing table) -->
+    <model name="table_empty">
+      <static>true</static>
+      <pose>0.70 0.22 0.15 0 0 0</pose>
+      <link name="table_link">
+        <collision name="table_top">
+          <geometry>
+            <box>
+              <size>0.3 0.4 0.02</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="table_top_visual">
+          <geometry>
+            <box>
+              <size>0.3 0.4 0.02</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.4 0.4 0.4 1</ambient>
+            <diffuse>0.4 0.4 0.4 1</diffuse>
+          </material>
+        </visual>
+        <!-- Table legs -->
+        <collision name="leg1">
+          <pose>0.10 0.15 -0.075 0 0 0</pose>
+          <geometry><cylinder><radius>0.015</radius><length>0.15</length></cylinder></geometry>
+        </collision>
+        <visual name="leg1_visual">
+          <pose>0.10 0.15 -0.075 0 0 0</pose>
+          <geometry><cylinder><radius>0.015</radius><length>0.15</length></cylinder></geometry>
+          <material><ambient>0.3 0.3 0.3 1</ambient><diffuse>0.3 0.3 0.3 1</diffuse></material>
+        </visual>
+        <collision name="leg2">
+          <pose>-0.10 0.15 -0.075 0 0 0</pose>
+          <geometry><cylinder><radius>0.015</radius><length>0.15</length></cylinder></geometry>
+        </collision>
+        <visual name="leg2_visual">
+          <pose>-0.10 0.15 -0.075 0 0 0</pose>
+          <geometry><cylinder><radius>0.015</radius><length>0.15</length></cylinder></geometry>
+          <material><ambient>0.3 0.3 0.3 1</ambient><diffuse>0.3 0.3 0.3 1</diffuse></material>
+        </visual>
+        <collision name="leg3">
+          <pose>0.10 -0.15 -0.075 0 0 0</pose>
+          <geometry><cylinder><radius>0.015</radius><length>0.15</length></cylinder></geometry>
+        </collision>
+        <visual name="leg3_visual">
+          <pose>0.10 -0.15 -0.075 0 0 0</pose>
+          <geometry><cylinder><radius>0.015</radius><length>0.15</length></cylinder></geometry>
+          <material><ambient>0.3 0.3 0.3 1</ambient><diffuse>0.3 0.3 0.3 1</diffuse></material>
+        </visual>
+        <collision name="leg4">
+          <pose>-0.10 -0.15 -0.075 0 0 0</pose>
+          <geometry><cylinder><radius>0.015</radius><length>0.15</length></cylinder></geometry>
+        </collision>
+        <visual name="leg4_visual">
+          <pose>-0.10 -0.15 -0.075 0 0 0</pose>
+          <geometry><cylinder><radius>0.015</radius><length>0.15</length></cylinder></geometry>
+          <material><ambient>0.3 0.3 0.3 1</ambient><diffuse>0.3 0.3 0.3 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Small box (pick-and-place target) -->
+    <model name="pick_box">
+      <pose>0.58 -0.22 0.175 0 0 0</pose>
+      <link name="box_link">
+        <inertial>
+          <mass>0.05</mass>
+          <inertia>
+            <ixx>0.0000083</ixx><ixy>0</ixy><ixz>0</ixz>
+            <iyy>0.0000083</iyy><iyz>0</iyz>
+            <izz>0.0000083</izz>
+          </inertia>
+        </inertial>
+        <collision name="box_collision">
+          <geometry>
+            <box><size>0.03 0.03 0.03</size></box>
+          </geometry>
+          <surface>
+            <friction>
+              <ode><mu>1.0</mu><mu2>1.0</mu2></ode>
+            </friction>
+          </surface>
+        </collision>
+        <visual name="box_visual">
+          <geometry>
+            <box><size>0.03 0.03 0.03</size></box>
+          </geometry>
+          <material>
+            <ambient>0.8 0.1 0.1 1</ambient>
+            <diffuse>0.8 0.1 0.1 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Blue box (pick-and-place target 2) -->
+    <model name="pick_box_blue">
+      <pose>0.58 -0.14 0.175 0 0 0</pose>
+      <link name="box_link">
+        <inertial>
+          <mass>0.05</mass>
+          <inertia>
+            <ixx>0.0000083</ixx><ixy>0</ixy><ixz>0</ixz>
+            <iyy>0.0000083</iyy><iyz>0</iyz>
+            <izz>0.0000083</izz>
+          </inertia>
+        </inertial>
+        <collision name="box_collision">
+          <geometry>
+            <box><size>0.03 0.03 0.03</size></box>
+          </geometry>
+          <surface>
+            <friction>
+              <ode><mu>1.0</mu><mu2>1.0</mu2></ode>
+            </friction>
+          </surface>
+        </collision>
+        <visual name="box_visual">
+          <geometry>
+            <box><size>0.03 0.03 0.03</size></box>
+          </geometry>
+          <material>
+            <ambient>0.1 0.1 0.8 1</ambient>
+            <diffuse>0.1 0.1 0.8 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Green box (pick-and-place target 3) -->
+    <model name="pick_box_green">
+      <pose>0.58 -0.30 0.175 0 0 0</pose>
+      <link name="box_link">
+        <inertial>
+          <mass>0.05</mass>
+          <inertia>
+            <ixx>0.0000083</ixx><ixy>0</ixy><ixz>0</ixz>
+            <iyy>0.0000083</iyy><iyz>0</iyz>
+            <izz>0.0000083</izz>
+          </inertia>
+        </inertial>
+        <collision name="box_collision">
+          <geometry>
+            <box><size>0.03 0.03 0.03</size></box>
+          </geometry>
+          <surface>
+            <friction>
+              <ode><mu>1.0</mu><mu2>1.0</mu2></ode>
+            </friction>
+          </surface>
+        </collision>
+        <visual name="box_visual">
+          <geometry>
+            <box><size>0.03 0.03 0.03</size></box>
+          </geometry>
+          <material>
+            <ambient>0.1 0.8 0.1 1</ambient>
+            <diffuse>0.1 0.8 0.1 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+  </world>
+</sdf>

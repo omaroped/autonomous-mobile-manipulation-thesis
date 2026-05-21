@@ -1,0 +1,10 @@
+moveit_setup_assistant_config:
+  urdf:
+    package: limo_cobot_bringup
+    relative_path: urdf/limo_cobot.xacro
+  srdf:
+    relative_path: config/limo_cobot.srdf
+  package_settings:
+    author_name: "Omar "
+    author_email: omar.alobaid@hsrw.org
+    generated_timestamp: 1779139183

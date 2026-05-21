@@ -1,0 +1,12 @@
+numpy
+pandas
+matplotlib
+opencv-python
+torch
+torchvision
+scipy
+scikit-learn
+ipykernel
+notebook
+PyYAML
+requests
