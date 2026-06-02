@@ -8,6 +8,12 @@
 <sdf version="1.6">
   <world name="simple_warehouse">
 
+    <plugin name="gazebo_ros_state" filename="libgazebo_ros_state.so">
+      <ros>
+        <namespace>/gazebo</namespace>
+      </ros>
+    </plugin>
+
     <!-- Physics -->
     <physics type="ode">
       <max_step_size>0.001</max_step_size>
@@ -25,135 +31,11 @@
       <uri>model://ground_plane</uri>
     </include>
 
-    <!-- Table 1 (with boxes) -->
-    <model name="table">
-      <static>true</static>
-      <pose>0.70 -0.22 0.15 0 0 0</pose>
-      <link name="table_link">
-        <collision name="table_top">
-          <geometry>
-            <box>
-              <size>0.3 0.4 0.02</size>
-            </box>
-          </geometry>
-        </collision>
-        <visual name="table_top_visual">
-          <geometry>
-            <box>
-              <size>0.3 0.4 0.02</size>
-            </box>
-          </geometry>
-          <material>
-            <ambient>0.6 0.4 0.2 1</ambient>
-            <diffuse>0.6 0.4 0.2 1</diffuse>
-          </material>
-        </visual>
-        <!-- Table legs -->
-        <collision name="leg1">
-          <pose>0.10 0.15 -0.075 0 0 0</pose>
-          <geometry><cylinder><radius>0.015</radius><length>0.15</length></cylinder></geometry>
-        </collision>
-        <visual name="leg1_visual">
-          <pose>0.10 0.15 -0.075 0 0 0</pose>
-          <geometry><cylinder><radius>0.015</radius><length>0.15</length></cylinder></geometry>
-          <material><ambient>0.5 0.3 0.1 1</ambient><diffuse>0.5 0.3 0.1 1</diffuse></material>
-        </visual>
-        <collision name="leg2">
-          <pose>-0.10 0.15 -0.075 0 0 0</pose>
-          <geometry><cylinder><radius>0.015</radius><length>0.15</length></cylinder></geometry>
-        </collision>
-        <visual name="leg2_visual">
-          <pose>-0.10 0.15 -0.075 0 0 0</pose>
-          <geometry><cylinder><radius>0.015</radius><length>0.15</length></cylinder></geometry>
-          <material><ambient>0.5 0.3 0.1 1</ambient><diffuse>0.5 0.3 0.1 1</diffuse></material>
-        </visual>
-        <collision name="leg3">
-          <pose>0.10 -0.15 -0.075 0 0 0</pose>
-          <geometry><cylinder><radius>0.015</radius><length>0.15</length></cylinder></geometry>
-        </collision>
-        <visual name="leg3_visual">
-          <pose>0.10 -0.15 -0.075 0 0 0</pose>
-          <geometry><cylinder><radius>0.015</radius><length>0.15</length></cylinder></geometry>
-          <material><ambient>0.5 0.3 0.1 1</ambient><diffuse>0.5 0.3 0.1 1</diffuse></material>
-        </visual>
-        <collision name="leg4">
-          <pose>-0.10 -0.15 -0.075 0 0 0</pose>
-          <geometry><cylinder><radius>0.015</radius><length>0.15</length></cylinder></geometry>
-        </collision>
-        <visual name="leg4_visual">
-          <pose>-0.10 -0.15 -0.075 0 0 0</pose>
-          <geometry><cylinder><radius>0.015</radius><length>0.15</length></cylinder></geometry>
-          <material><ambient>0.5 0.3 0.1 1</ambient><diffuse>0.5 0.3 0.1 1</diffuse></material>
-        </visual>
-      </link>
-    </model>
 
-    <!-- Table 2 (Empty placing table) -->
-    <model name="table_empty">
-      <static>true</static>
-      <pose>0.70 0.22 0.15 0 0 0</pose>
-      <link name="table_link">
-        <collision name="table_top">
-          <geometry>
-            <box>
-              <size>0.3 0.4 0.02</size>
-            </box>
-          </geometry>
-        </collision>
-        <visual name="table_top_visual">
-          <geometry>
-            <box>
-              <size>0.3 0.4 0.02</size>
-            </box>
-          </geometry>
-          <material>
-            <ambient>0.4 0.4 0.4 1</ambient>
-            <diffuse>0.4 0.4 0.4 1</diffuse>
-          </material>
-        </visual>
-        <!-- Table legs -->
-        <collision name="leg1">
-          <pose>0.10 0.15 -0.075 0 0 0</pose>
-          <geometry><cylinder><radius>0.015</radius><length>0.15</length></cylinder></geometry>
-        </collision>
-        <visual name="leg1_visual">
-          <pose>0.10 0.15 -0.075 0 0 0</pose>
-          <geometry><cylinder><radius>0.015</radius><length>0.15</length></cylinder></geometry>
-          <material><ambient>0.3 0.3 0.3 1</ambient><diffuse>0.3 0.3 0.3 1</diffuse></material>
-        </visual>
-        <collision name="leg2">
-          <pose>-0.10 0.15 -0.075 0 0 0</pose>
-          <geometry><cylinder><radius>0.015</radius><length>0.15</length></cylinder></geometry>
-        </collision>
-        <visual name="leg2_visual">
-          <pose>-0.10 0.15 -0.075 0 0 0</pose>
-          <geometry><cylinder><radius>0.015</radius><length>0.15</length></cylinder></geometry>
-          <material><ambient>0.3 0.3 0.3 1</ambient><diffuse>0.3 0.3 0.3 1</diffuse></material>
-        </visual>
-        <collision name="leg3">
-          <pose>0.10 -0.15 -0.075 0 0 0</pose>
-          <geometry><cylinder><radius>0.015</radius><length>0.15</length></cylinder></geometry>
-        </collision>
-        <visual name="leg3_visual">
-          <pose>0.10 -0.15 -0.075 0 0 0</pose>
-          <geometry><cylinder><radius>0.015</radius><length>0.15</length></cylinder></geometry>
-          <material><ambient>0.3 0.3 0.3 1</ambient><diffuse>0.3 0.3 0.3 1</diffuse></material>
-        </visual>
-        <collision name="leg4">
-          <pose>-0.10 -0.15 -0.075 0 0 0</pose>
-          <geometry><cylinder><radius>0.015</radius><length>0.15</length></cylinder></geometry>
-        </collision>
-        <visual name="leg4_visual">
-          <pose>-0.10 -0.15 -0.075 0 0 0</pose>
-          <geometry><cylinder><radius>0.015</radius><length>0.15</length></cylinder></geometry>
-          <material><ambient>0.3 0.3 0.3 1</ambient><diffuse>0.3 0.3 0.3 1</diffuse></material>
-        </visual>
-      </link>
-    </model>
 
     <!-- Small box (pick-and-place target) -->
     <model name="pick_box">
-      <pose>0.58 -0.22 0.175 0 0 0</pose>
+      <pose>0.78 -0.22 0.015 0 0 0</pose>
       <link name="box_link">
         <inertial>
           <mass>0.05</mass>
@@ -187,7 +69,7 @@
 
     <!-- Blue box (pick-and-place target 2) -->
     <model name="pick_box_blue">
-      <pose>0.58 -0.14 0.175 0 0 0</pose>
+      <pose>0.78 -0.14 0.015 0 0 0</pose>
       <link name="box_link">
         <inertial>
           <mass>0.05</mass>
@@ -221,7 +103,7 @@
 
     <!-- Green box (pick-and-place target 3) -->
     <model name="pick_box_green">
-      <pose>0.58 -0.30 0.175 0 0 0</pose>
+      <pose>0.78 -0.30 0.015 0 0 0</pose>
       <link name="box_link">
         <inertial>
           <mass>0.05</mass>

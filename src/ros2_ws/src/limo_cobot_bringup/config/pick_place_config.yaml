@@ -1,0 +1,61 @@
+# Configuration file for autonomous pick and place demo
+# All coordinates are in the WORLD / ODOM frame unless noted.
+# Robot spawns at (0.0, -0.22) — already Y-aligned with pick table.
+
+navigation:
+  drive_speed: 0.12             # cmd_vel linear.x (reduced to prevent overshoot and collisions)
+  nav_speed: 0.12               # Go-To-Goal speed (reduced to prevent overshoot)
+  drive_timeout: 60.0           # simulation-time seconds
+  nav_timeout: 60.0             # simulation-time seconds
+
+  pick_x: 0.568                 # X to stop at in front of pick table
+  reverse_x: -0.75              # X to reverse to (gives room for wide forward arc)
+  place_waypoint_x: 0.45        # forward arc target near place table
+  place_waypoint_y: 0.22        # Y of place table
+  place_x: 0.655                 # final X at place table
+
+  # Home position
+  home_x: 0.0
+  home_y: -0.22                 # same Y as spawn
+
+# Arm poses – all relative to base_link
+arm:
+  pre_approach:
+    # Joint-space pre-position: moves joints before IK for a specific arm posture.
+    # Joint 2 (shoulder) ≈ -60° lifts arm, Joint 3 (elbow) ≈ 30° bends forward,
+    # Joint 5 (wrist) ≈ 90° makes gripper point down. IK then fine-tunes from this seed.
+    joints: [0.0, -1.047, 0.524, 0.0, 1.571, 0.0]
+    duration: 2.0
+  approach:
+    x: 0.13
+    y: 0.0
+    z: 0.180
+    roll: 0.0
+    pitch: 1.5708                  # gripper pointing straight down (vertical grasp)
+    yaw: 0.0
+  grasp:
+    x: 0.13
+    y: 0.0
+    z: 0.140
+    roll: 0.0
+    pitch: 1.5708                  # gripper pointing straight down (vertical grasp)
+    yaw: 0.0
+  lift:
+    x: 0.13
+    y: 0.0
+    z: 0.180
+    roll: 0.0
+    pitch: 1.5708                  # gripper pointing straight down (vertical grasp)
+    yaw: 0.0
+
+pick_target:
+  name: "pick_box"              # Gazebo model name
+
+gripper:
+  open_pos: 0.0
+  close_pos: -0.7
+  duration: 1.5
+
+planning:
+  trajectory_duration: 3.0
+  trajectory_timeout: 15.0

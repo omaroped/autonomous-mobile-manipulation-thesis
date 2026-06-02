@@ -17,6 +17,18 @@ Visualization Manager:
       Show Axes: true
       Show Names: true
       Frame Timeout: 15
+    - Class: rviz_default_plugins/Image
+      Name: Camera Image (RGB)
+      Topic:
+        Reliability Policy: Best Effort
+        Value: /rgb/image_raw
+      Value: true
+    - Class: rviz_default_plugins/Image
+      Name: Camera Image (Depth)
+      Topic:
+        Reliability Policy: Best Effort
+        Value: /depth/image_raw
+      Value: true
     - Class: rviz_default_plugins/Grid
       Name: Grid
       Enabled: true

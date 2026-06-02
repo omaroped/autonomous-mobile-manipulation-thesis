@@ -26,8 +26,6 @@ from launch.actions import (
 from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import (
-    Command,
-    FindExecutable,
     LaunchConfiguration,
     PathJoinSubstitution,
 )
@@ -57,6 +55,10 @@ def generate_launch_description():
         'use_rviz', default_value='false',
         description='Launch RViz alongside Gazebo'
     )
+    gui_arg = DeclareLaunchArgument(
+        'gui', default_value='true',
+        description='Start Gazebo client (GUI)'
+    )
     world_arg = DeclareLaunchArgument(
         'world',
         default_value=os.path.join(get_package_share_directory('limo_cobot_bringup'), 'worlds', 'simple_warehouse.world'),
@@ -68,20 +70,18 @@ def generate_launch_description():
     )
 
     use_rviz = LaunchConfiguration('use_rviz')
+    gui = LaunchConfiguration('gui')
     world = LaunchConfiguration('world')
     use_sim_time = LaunchConfiguration('use_sim_time')
 
-    import subprocess
-
     # --- Process xacro to URDF ---
-    pkg_share_dir = get_package_share_directory('limo_cobot_bringup')
-    xacro_file_path = os.path.join(pkg_share_dir, 'urdf', 'limo_cobot.xacro')
-
-    command_str = f"xacro {xacro_file_path} | python3 -c \"import sys, re; print(re.sub(r'<!--.*?-->', '', sys.stdin.read(), flags=re.DOTALL))\""
-    result = subprocess.run(command_str, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"Failed to process xacro: {result.stderr}")
-    robot_description_content = result.stdout
+    # NOTE: Using pre-generated file instead of xacro pipe to avoid
+    # libgazebo_ros2_control.so segfault. Regenerate with:
+    #   ros2 run xacro xacro <pkg>/urdf/limo_cobot.xacro | python3 -c "import sys,re; print(re.sub(r'<!--.*?-->','',sys.stdin.read(),flags=re.DOTALL))" > <pkg>/urdf/limo_cobot_generated.urdf
+    pkg_dir = get_package_share_directory('limo_cobot_bringup')
+    generated_path = os.path.join(pkg_dir, 'urdf', 'limo_cobot_generated.urdf')
+    with open(generated_path) as f:
+        robot_description_content = f.read()
 
     # --- Robot State Publisher ---
     robot_state_publisher = Node(
@@ -100,6 +100,7 @@ def generate_launch_description():
         ]),
         launch_arguments={
             'world': world,
+            'gui': gui,
             'extra_gazebo_args': '--verbose'
         }.items(),
     )
@@ -112,7 +113,7 @@ def generate_launch_description():
             '-topic', 'robot_description',
             '-entity', 'limo_cobot',
             '-x', '0.0',
-            '-y', '0.0',
+            '-y', '-0.22',
             '-z', '0.2',
         ],
         output='screen',
@@ -147,7 +148,6 @@ def generate_launch_description():
             on_exit=[load_joint_state_broadcaster],
         )
     )
-
     delayed_arm_controller = RegisterEventHandler(
         event_handler=OnProcessExit(
             target_action=load_joint_state_broadcaster,
@@ -168,6 +168,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         use_rviz_arg,
+        gui_arg,
         world_arg,
         use_sim_time_arg,
         gazebo,

@@ -26,6 +26,30 @@ Visualization Manager:
       Scene Robot:
         Robot Alpha: 0.5
       Value: true
+    - Class: rviz_default_plugins/LaserScan
+      Name: LaserScan
+      Topic:
+        Reliability Policy: Best Effort
+        Value: /scan
+      Value: true
+    - Class: rviz_default_plugins/Image
+      Name: Camera Image (RGB)
+      Topic:
+        Reliability Policy: Best Effort
+        Value: /rgb/image_raw
+      Value: true
+    - Class: rviz_default_plugins/Image
+      Name: Camera Image (Depth)
+      Topic:
+        Reliability Policy: Best Effort
+        Value: /depth/image_raw
+      Value: true
+    - Class: rviz_default_plugins/PointCloud2
+      Name: PointCloud2
+      Topic:
+        Reliability Policy: Best Effort
+        Value: /depth/points
+      Value: true
   Global Options:
     Fixed Frame: odom
   Tools:
