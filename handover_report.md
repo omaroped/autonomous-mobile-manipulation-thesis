@@ -52,13 +52,17 @@ Here are the key files in the workspace essential for understanding and resolvin
    * The camera point cloud from `/depth/points` is successfully received.
    * Ground/support plane segmentation works properly, isolating the floor/table (z-tolerance expanded to 0.35 to account for LIMO's `base_link` height offset of ~15cm).
    * The support surface collision object is successfully added to the MoveIt planning scene.
+5. **Perception Object Segmentation succeeds when positioned closer:**
+   * By adjusting the pick zone waypoint `pick_zone_x` to `0.60` (instead of `0.70`), the camera was close enough to see the target box.
+   * The point cloud of the box was large and clean enough that RANSAC successfully fit a model.
+   * Service call `/get_planning_scene_mycobot` now successfully returns `success: true` and identifies the target object `box_2`.
 
 ---
 
 ## 4. What is Wrong (The Current Bottlenecks)
 
-### Perception Server Fails to Detect Objects (`Segmented 0 objects`)
-Although the plane is segmented, object classification fails because the code extracts **0 line/circle models** from the clustered point clouds. This is caused by three distinct issues in [`object_segmentation.cpp`](file:///home/omar/Desktop/Thesis/src/ros2_ws/src/mycobot_ros2/hello_mtc_with_perception/src/object_segmentation.cpp):
+### Robustness Issues in Object Segmentation (`object_segmentation.cpp`)
+Although the perception server succeeds when the object is close and the cluster is very clean, the underlying C++ logic contains critical bugs that will cause failures or crashes under noisier conditions:
 
 1. **Double Mapping Bug:**
    * In `fitLineRANSAC` / `fitCircleRANSAC`, indices are already mapped to original cluster indices via `projection_map.at(i)`.
