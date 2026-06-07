@@ -1,0 +1,55 @@
+get_planning_scene_server:
+  ros__parameters:
+    # Camera topics from LIMO
+    point_cloud_topic: /depth/points
+    rgb_image_topic: /rgb/image_raw
+    target_frame: base_link
+
+    # Cropping (in target_frame)
+    enable_cropping: true
+    crop_min_x: -0.2
+    crop_max_x: 1.0
+    crop_min_y: -0.8
+    crop_max_y: 0.8
+    crop_min_z: -1.0
+    crop_max_z: 1.0
+
+    # Plane segmentation
+    max_plane_segmentation_iterations: 1000
+    plane_segmentation_distance_threshold: 0.01
+    z_tolerance: 0.35  # Increased to 0.35 to allow ground plane detection (floor is at z ≈ -0.15 in base_link)
+    angle_tolerance: 0.999
+    min_cluster_size: 100
+    max_cluster_size: 1000000
+    cluster_tolerance: 0.02
+
+    # Normal/curvature/RSD estimation
+    k_neighbors: 30
+    rsd_radius: 0.02
+
+    # Region growing clustering
+    nearest_neighbors: 30
+    smoothness_threshold: 20.0
+    curvature_threshold: 0.2
+
+    # Object segmentation (RANSAC + Hough)
+    num_iterations: 5
+    inlier_threshold: 85
+    hough_radius_bins: 50
+    hough_center_bins: 50
+    ransac_distance_threshold: 0.001
+    ransac_max_iterations: 1000
+
+    # Circle/Line filtering
+    circle_min_cluster_size: 20
+    circle_curvature_threshold: 0.0015
+    circle_radius_tolerance: 0.020
+    circle_normal_angle_threshold: 0.2
+    circle_cluster_tolerance: 0.025
+
+    line_min_cluster_size: 20
+    line_curvature_threshold: 0.0011
+    line_cluster_tolerance: 0.025
+    line_rho_threshold: 0.01
+    line_theta_threshold: 0.1
+    output_directory: /tmp/

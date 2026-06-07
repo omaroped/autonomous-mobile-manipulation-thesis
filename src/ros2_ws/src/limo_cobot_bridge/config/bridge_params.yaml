@@ -1,0 +1,37 @@
+limo_cobot_bridge:
+  ros__parameters:
+    # Navigation
+    pick_zone_x: 0.60
+    pick_zone_y: -0.22
+    place_zone_x: 0.78
+    place_zone_y: 0.22
+    home_zone_x: 0.0
+    home_zone_y: -0.22
+
+    # Drive speeds
+    nav_speed: 0.15
+    pick_approach_speed: 0.12
+
+    # Grasp parameters
+    grasp_approach_offset: 0.08
+    grasp_lift_offset: 0.15
+    grasp_roll: 0.0
+    grasp_pitch: 1.5708   # pi/2 — gripper pointing down
+    grasp_yaw: 0.0
+
+    # Object dimensions (for collision object)
+    object_length: 0.03
+    object_width: 0.03
+    object_height: 0.03
+
+    # Target shape for perception service
+    target_shape: "box"
+    target_dimensions: [0.03, 0.03, 0.03]
+
+    # Gripper positions
+    gripper_open: 0.0
+    gripper_closed: -0.7
+
+    # IK
+    ik_solver_timeout: 0.5
+    ik_avoid_collisions: true

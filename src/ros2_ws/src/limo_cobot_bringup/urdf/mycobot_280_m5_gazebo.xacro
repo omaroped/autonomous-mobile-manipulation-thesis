@@ -27,13 +27,13 @@
     <link name="${prefix}joint1">
       <visual>
         <geometry>
-          <mesh filename="package://mycobot_description/urdf/mycobot_280_m5/joint1.dae"/>
+          <mesh filename="package://mycobot_description/meshes/mycobot_280/link1.dae"/>
         </geometry>
         <origin xyz="0.0 0 0" rpy="0 0 -1.5708"/>
       </visual>
       <collision>
         <geometry>
-          <mesh filename="package://mycobot_description/urdf/mycobot_280_m5/joint1.dae"/>
+          <mesh filename="package://mycobot_description/meshes/mycobot_280/link1.dae"/>
         </geometry>
         <origin xyz="0.0 0 0" rpy="0 0 -1.5708"/>
       </collision>
@@ -47,13 +47,13 @@
     <link name="${prefix}joint2">
       <visual>
         <geometry>
-          <mesh filename="package://mycobot_description/urdf/mycobot_280_m5/joint2.dae"/>
+          <mesh filename="package://mycobot_description/meshes/mycobot_280/link2.dae"/>
         </geometry>
         <origin xyz="0.0 0 -0.06096" rpy="0 0 -1.5708"/>
       </visual>
       <collision>
         <geometry>
-          <mesh filename="package://mycobot_description/urdf/mycobot_280_m5/joint2.dae"/>
+          <mesh filename="package://mycobot_description/meshes/mycobot_280/link2.dae"/>
         </geometry>
         <origin xyz="0.0 0 -0.06096" rpy="0 0 -1.5708"/>
       </collision>
@@ -67,13 +67,13 @@
     <link name="${prefix}joint3">
       <visual>
         <geometry>
-          <mesh filename="package://mycobot_description/urdf/mycobot_280_m5/joint3.dae"/>
+          <mesh filename="package://mycobot_description/meshes/mycobot_280/link3.dae"/>
         </geometry>
         <origin xyz="0.0 0 0.03256" rpy="0 -1.5708 0"/>
       </visual>
       <collision>
         <geometry>
-          <mesh filename="package://mycobot_description/urdf/mycobot_280_m5/joint3.dae"/>
+          <mesh filename="package://mycobot_description/meshes/mycobot_280/link3.dae"/>
         </geometry>
         <origin xyz="0.0 0 0.03256" rpy="0 -1.5708 0"/>
       </collision>
@@ -87,13 +87,13 @@
     <link name="${prefix}joint4">
       <visual>
         <geometry>
-          <mesh filename="package://mycobot_description/urdf/mycobot_280_m5/joint4.dae"/>
+          <mesh filename="package://mycobot_description/meshes/mycobot_280/link4.dae"/>
         </geometry>
         <origin xyz="0.0 0 0.03056" rpy="0 -1.5708 0"/>
       </visual>
       <collision>
         <geometry>
-          <mesh filename="package://mycobot_description/urdf/mycobot_280_m5/joint4.dae"/>
+          <mesh filename="package://mycobot_description/meshes/mycobot_280/link4.dae"/>
         </geometry>
         <origin xyz="0.0 0 0.03056" rpy="0 -1.5708 0"/>
       </collision>
@@ -107,13 +107,13 @@
     <link name="${prefix}joint5">
       <visual>
         <geometry>
-          <mesh filename="package://mycobot_description/urdf/mycobot_280_m5/joint5.dae"/>
+          <mesh filename="package://mycobot_description/meshes/mycobot_280/link5.dae"/>
         </geometry>
         <origin xyz="0.0 0 -0.03356" rpy="-1.5708 0 0"/>
       </visual>
       <collision>
         <geometry>
-          <mesh filename="package://mycobot_description/urdf/mycobot_280_m5/joint5.dae"/>
+          <mesh filename="package://mycobot_description/meshes/mycobot_280/link5.dae"/>
         </geometry>
         <origin xyz="0.0 0 -0.03356" rpy="-1.5708 0 0"/>
       </collision>
@@ -127,13 +127,13 @@
     <link name="${prefix}joint6">
       <visual>
         <geometry>
-          <mesh filename="package://mycobot_description/urdf/mycobot_280_m5/joint6.dae"/>
+          <mesh filename="package://mycobot_description/meshes/mycobot_280/link6.dae"/>
         </geometry>
         <origin xyz="0 0.00 -0.038" rpy="0 0 0"/>
       </visual>
       <collision>
         <geometry>
-          <mesh filename="package://mycobot_description/urdf/mycobot_280_m5/joint6.dae"/>
+          <mesh filename="package://mycobot_description/meshes/mycobot_280/link6.dae"/>
         </geometry>
         <origin xyz="0 0.00 -0.038" rpy="0 0 0"/>
       </collision>
@@ -147,13 +147,13 @@
     <link name="${prefix}joint6_flange">
       <visual>
         <geometry>
-          <mesh filename="package://mycobot_description/urdf/mycobot_280_m5/joint7.dae"/>
+          <mesh filename="package://mycobot_description/meshes/mycobot_280/link7.dae"/>
         </geometry>
         <origin xyz="0.0 0 -0.012" rpy="0 0 0"/>
       </visual>
       <collision>
         <geometry>
-          <mesh filename="package://mycobot_description/urdf/mycobot_280_m5/joint7.dae"/>
+          <mesh filename="package://mycobot_description/meshes/mycobot_280/link7.dae"/>
         </geometry>
         <origin xyz="0.0 0 -0.012" rpy="0 0 0"/>
       </collision>
@@ -328,41 +328,6 @@
         <state_interface name="effort"/>
       </joint>
 
-      <!-- Gripper passive/mimic joints (no command interfaces) -->
-      <joint name="${prefix}gripper_base_to_gripper_left2">
-        <param name="mimic">${prefix}gripper_controller</param>
-        <param name="multiplier">1.0</param>
-        <state_interface name="position"/>
-        <state_interface name="velocity"/>
-      </joint>
-
-      <joint name="${prefix}gripper_left3_to_gripper_left1">
-        <param name="mimic">${prefix}gripper_controller</param>
-        <param name="multiplier">-1.0</param>
-        <state_interface name="position"/>
-        <state_interface name="velocity"/>
-      </joint>
-
-      <joint name="${prefix}gripper_base_to_gripper_right3">
-        <param name="mimic">${prefix}gripper_controller</param>
-        <param name="multiplier">-1.0</param>
-        <state_interface name="position"/>
-        <state_interface name="velocity"/>
-      </joint>
-
-      <joint name="${prefix}gripper_base_to_gripper_right2">
-        <param name="mimic">${prefix}gripper_controller</param>
-        <param name="multiplier">-1.0</param>
-        <state_interface name="position"/>
-        <state_interface name="velocity"/>
-      </joint>
-
-      <joint name="${prefix}gripper_right3_to_gripper_right1">
-        <param name="mimic">${prefix}gripper_controller</param>
-        <param name="multiplier">1.0</param>
-        <state_interface name="position"/>
-        <state_interface name="velocity"/>
-      </joint>
     </ros2_control>
 
     <gazebo>
