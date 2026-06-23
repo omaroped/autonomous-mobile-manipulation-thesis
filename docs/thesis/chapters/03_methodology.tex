@@ -8,10 +8,66 @@
 The proposed system relies on a tightly coupled software architecture leveraging ROS 2...
 
 \section{Mapping and Localization (SLAM)}
-% Detail the use of Cartographer or SLAM Toolbox.
+Environment mapping is performed using SLAM Toolbox~\cite{macenski2021slam} in
+synchronous mapping mode, fusing LiDAR range data with wheel odometry to construct a
+2D occupancy grid of the workspace. The EAI T-mini Pro LiDAR is configured to a
+forward arc of $\pm120^{\circ}$ (2.094\,rad half-angle) with a minimum valid range
+of 0.10\,m. Both constraints are physically motivated: the sensor's angular subtended
+arc at the chassis sides begins at approximately $\pm108^{\circ}$, so beams beyond
+that angle strike the robot's own body and produce spurious occupied cells; the 0.10\,m
+minimum eliminates the residual chassis returns that lie within the sensor's field of
+view. Operating with the unrestricted $360^{\circ}$ field of view baked 55 isolated
+noise pixels into the map as phantom obstacle cells, degrading localisation and
+inflating the global costmap. Once the sensor parameters were corrected, the mapping
+session was repeated from scratch.
+
+Localisation during navigation is performed by the Adaptive Monte Carlo Localisation
+(AMCL) filter, which matches the live scan against the pre-built map to maintain a
+particle-based pose estimate. The AMCL laser minimum range is set to match the physical
+sensor threshold (0.10\,m), ensuring that AMCL and the sensor model agree on which
+returns to treat as valid.
 
 \section{Autonomous Navigation}
-% Detail the Nav2 framework, costmaps, and planners.
+Autonomous navigation is realised with the Nav2 framework~\cite{macenski2020nav2}
+configured for a differential-drive base. The choice of differential drive over the
+Ackermann steering mode available on the LIMO PRO was deliberate: the differential
+kinematic model allows in-place rotation, which the navigation planner exploits to
+align the vehicle heading at the start and end of each segment, and it provides a
+simpler, directly verifiable odometry model (track width and wheel speed only) that is
+less susceptible to unmodelled steering compliance.
+
+The Nav2 stack consists of a global planner (NavFn/Dijkstra), which computes a
+collision-free path in the pre-built occupancy grid, and a local planner (DWB), which
+produces feasible velocity commands tracking that path while avoiding dynamic obstacles.
+Each planner consults a layered costmap: the global costmap inflates all occupied map
+cells by a fixed margin; the local costmap maintains a sensor-updated window around the
+robot. A key configuration choice concerns the minimum obstacle range applied to both
+costmaps. The mounted arm extends approximately 0.25--0.35\,m forward of the base in
+the default rest posture; at a costmap minimum obstacle range of 0.22\,m (the default),
+the arm itself is marked as a lethal obstacle in the local costmap, blocking all planned
+trajectories. Raising the obstacle and raytrace minimum ranges to 0.35\,m in both
+costmaps removes the arm from the observable obstacle space and restores planning. The
+Gazebo differential-drive controller is configured with \texttt{odometry\_source: WORLD},
+which derives odometry directly from the simulated world frame rather than integrating
+wheel velocities; in simulation this yields perfect, drift-free odometry, simplifying
+the validation of the navigation and manipulation pipeline before introducing realistic
+odometry noise.
 
 \section{Kinematics and Motion Planning}
-% Detail MoveIt2 constraints and inverse kinematics.
+The myCobot 280 is modelled as a 6-degree-of-freedom serial revolute chain. Inverse
+kinematics is solved by the KDL analytical plugin, using a 22-seed random restart
+strategy to increase the probability of finding a solution in the presence of
+configuration-space discontinuities. Motion is planned by OMPL's RRTConnect algorithm,
+which builds two trees simultaneously from the start and goal configurations and
+attempts to connect them, providing fast convergence on connected planning problems.
+All arm motion goals are expressed as Cartesian pose constraints on the
+\texttt{gripper\_tcp} link in the \texttt{odom} planning frame; the planner computes a
+collision-checked joint trajectory from the current state to the goal, which is executed
+by the \texttt{ros2\_control} joint-trajectory controller.
+
+Three named arm configurations are used by the orchestration layer: \texttt{home}, the
+zero-joint-angle rest posture; \texttt{ready}, a raised forward-facing posture from
+which Cartesian pick goals can be planned without joint-space discontinuities; and
+\texttt{travel}, a compact downward-folded posture in which the arm's centre of mass
+is positioned close to the base, reducing the inertial moment that would otherwise
+excite joint oscillations during base navigation.

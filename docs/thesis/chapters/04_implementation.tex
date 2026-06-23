@@ -2,6 +2,7 @@
 % Chapter 4: System Architecture and Implementation
 % ----------------------------------------------------------------------------------
 % Detail the hardware (LIMO Cobot, MyCobot, Jetson Orin Nano) and the software (ROS 2 nodes, topics, actions).
+\label{ch:implementation}
 
 \section{Hardware Platform}
 The Agilex LIMO Cobot integrates a mobile base with...
@@ -108,7 +109,8 @@ as a simulation-tuning or test-scenario value. The platform was confirmed from t
 procurement record to be the AgileX LIMO~PRO with an Elephant Robotics myCobot~280, an
 Orbbec DaBai depth camera, an EAI~T-mini~Pro LiDAR, and an NVIDIA Jetson Orin~Nano.
 Cross-checking the model against these specifications revealed and corrected several
-inherited errors: the wheel track ($0.14\rightarrow0.175$\,m), the depth-camera
+inherited errors: the wheel track ($0.14\rightarrow0.172$\,m, confirmed from the
+mechanical datasheet), the depth-camera
 horizontal field of view ($80^{\circ}\rightarrow67.9^{\circ}$) and depth range and
 resolution ($0\text{--}8\rightarrow0.3\text{--}3$\,m, $640\times480\rightarrow640\times400$),
 and the LiDAR field of view and range
@@ -141,6 +143,69 @@ offset, orientation tolerance, and closing clearance---constitute the tool-frame
 calibration that, on the physical robot, generalises to a combined hand--eye and
 tool-centre-point calibration.
 
+\section{Navigation Integration and Drive Architecture}
+The differential-drive kinematics of the LIMO PRO is exposed to Nav2 via the
+\texttt{gz\_diff\_drive} Gazebo plugin and the \texttt{diff\_drive\_controller} from
+\texttt{ros2\_control}. The measured wheel track of the LIMO PRO is 172\,mm; this
+value was confirmed from the manufacturer's mechanical datasheet and set as the
+\texttt{wheel\_separation} parameter in the drive controller. A discrepancy of 3\,mm
+from an earlier assumed value of 175\,mm is small in absolute terms but accumulates
+over distance during dead reckoning, making accurate track width an important parameter
+for odometry consistency with the physical robot.
+
+The simulation odometry source is set to \texttt{WORLD}, which instructs Gazebo to
+derive the odometric pose directly from the simulated world frame rather than by
+integrating wheel velocities. The consequence is that the \texttt{odom} frame in the
+TF tree is numerically identical to the Gazebo world frame: pose errors and accumulated
+drift are absent. This arrangement is intentional: in the simulation validation phase
+the objective is to verify that the planning, perception, and manipulation layers are
+individually correct before introducing the compounding uncertainty of real odometry.
+The simulation navigation pipeline therefore constitutes an upper bound on achievable
+performance, against which the hardware trials---using real odometry---will be compared
+as part of the sim-to-real evaluation.
+
+A Nav2 configuration file (\texttt{nav2\_limo\_diff.yaml}) parameterises the local and
+global costmaps, the AMCL particle filter, the DWB local planner, and the behaviour
+trees governing goal approach and recovery. The most significant departure from a stock
+configuration is the costmap obstacle minimum range. In a stock Nav2 deployment the
+minimum range at which LiDAR returns are admitted into the costmap is set to 0.22\,m.
+For the LIMO Cobot this value causes the arm, which extends 0.25--0.35\,m in the
+rest posture, to be treated as an obstacle, marking the robot's own vicinity as a
+lethal zone and rendering the local planner unable to find any valid trajectory. This
+was diagnosed by observing the local costmap in RViz: a ring of lethal cells
+surrounded the robot even in an open environment. The fix is to raise both
+\texttt{obstacle\_min\_range} and \texttt{raytrace\_min\_range} in both costmaps to
+0.35\,m, which places the near-field arm geometry below the sensor admission threshold.
+
+\section{Sensor Configuration: LiDAR Self-Hit and SLAM Map Quality}
+An important implementation fault, and its correction, is documented here because it
+demonstrates a category of error that is specific to robots where the sensor's nominal
+field of view subtends the robot's own body.
+
+The EAI T-mini Pro LiDAR fitted to the LIMO PRO has a nominal $360^{\circ}$ horizontal
+field of view. When the sensor model was initially parameterised with this specification,
+beams in the angular range beyond $\pm108^{\circ}$ from the forward axis struck the
+robot's own chassis sides at approximately 6--7\,cm range. The sensor minimum range was
+set to 0.02\,m, which is less than this chassis return distance, so these hits were
+accepted as valid obstacle measurements. During SLAM mapping the robot treated its own
+body as a cluster of moving obstacles, baking 55 spurious occupied cells into the map.
+When Nav2 used this contaminated map for global planning and AMCL for localisation,
+the phantom walls degraded path quality and destabilised scan-match convergence.
+
+The correction applied two parameters simultaneously. The LiDAR field of view was
+restricted to $\pm120^{\circ}$ (a 2.094\,rad half-angle), which is conservative
+with respect to the chassis shadow angle ($\pm108^{\circ}$) and eliminates all chassis
+returns by geometry. The minimum valid range was raised from 0.02\,m to 0.10\,m as
+a defence in depth, rejecting any residual near-field return regardless of angle.
+A new SLAM session with the corrected sensor produced a map of 238$\times$358 cells
+(at 0.05\,m/cell) containing no spurious obstacle pixels in open traversable space,
+with 97.2\,\% of cells classified as free.
+
+The AMCL minimum range parameter was set to match the sensor threshold (0.10\,m) to
+ensure that the particle filter's expected measurement model agreed with the observed
+data; a mismatch between the sensor minimum range and the AMCL model range causes
+degraded likelihood scoring on near-range returns and reduces localisation accuracy.
+
 \section{Self-Collision Policy: Manipulator versus Mobile Base}
 A deliberate modelling decision concerns collision checking between the manipulator and
 the mobile-base body. The two subsystems are modelled at different collision fidelities:
@@ -157,3 +222,59 @@ in which arm--body collision is checked correctly. The disable is thus a
 simulation-modelling accommodation for coarse meshes, not a removal of real-robot
 safety; the corresponding refinement---tighter base meshes and regeneration of the
 collision matrix---is identified as future work.
+
+\section{Integrated Navigation--Manipulation Orchestration}
+The complete task cycle---navigate to the pickup location, pick the target object,
+back up---is coordinated by a single ROS~2 node, \texttt{nav\_pick\_orchestrator}.
+The node holds action clients for Nav2's \texttt{NavigateToPose} and MoveIt's
+\texttt{MoveGroup} interfaces, and a service client for the custom
+\texttt{grasp\_attacher} weld service; it sequences these interfaces in a deterministic
+state machine without a dedicated behaviour-tree engine. The sequencing is as follows.
+
+\begin{enumerate}
+    \item \textbf{Transport posture.} Before commanding any base motion, the node waits
+    for the MoveIt \texttt{move\_group} action server to accept connections and then
+    commands the arm to the \texttt{travel} configuration
+    ($\theta = [0, 1.2, {-0.6}, {-0.6}, 0, 0]$\,rad). This folds the arm downward,
+    lowering the overall centre of mass and shortening the lever arm of the second joint,
+    which is a horizontal-axis hinge whose compliance causes it to act as an inverted
+    pendulum under base acceleration. Without a compact transport posture, inertial
+    forces during navigation excite oscillations at joint~2 that persist for several
+    seconds after the base stops.
+    \item \textbf{Navigation.} A \texttt{NavigateToPose} goal is sent to Nav2 with the
+    pre-configured table waypoint. The node blocks until Nav2 reports success or failure.
+    \item \textbf{Visual docking.} On arrival at the coarse navigation goal, the node
+    engages a visual-servo docking stage: an HSV-thresholded centroid from the RGB
+    camera drives proportional linear velocity commands until the estimated box range
+    falls within the arm's grasp envelope.
+    \item \textbf{Grasp and retract.} The arm is moved to the \texttt{ready}
+    configuration, the box 3D pose is requested from the perception node, and the
+    standard grasp sequence (pre-grasp $\to$ descent $\to$ close $\to$ lift) is
+    executed. On closure the weld service rigidly attaches the box to the gripper link.
+    \item \textbf{Backup.} The base reverses by a fixed displacement to clear the
+    pickup zone.
+\end{enumerate}
+
+The node architecture makes a deliberate simplification: the \texttt{odom} frame, which
+in the Gazebo simulation is identical to the world frame (\texttt{odometry\_source:
+WORLD}), is used as the common reference for all TF lookups during manipulation.
+Specifically, the grasp-attacher service resolves the wrist position as a live TF lookup
+(\texttt{odom}$\to$\texttt{gripper\_tcp}) at the moment of weld, rather than propagating
+a stored pre-navigation position. This is essential: when the base moves from its startup
+position to the pickup table, any TF offset stored before navigation is invalidated; a
+live lookup at the instant of grasping is always consistent regardless of the path
+taken by the base.
+
+\section{Gazebo World Physics and Platform Stability}
+The Gazebo ODE physics engine's contact-correction velocity parameter
+(\texttt{contact\_max\_correcting\_vel}) governs the speed at which interpenetrating
+bodies are pushed apart after each collision step. A world file inherited from an
+upstream reference repository set this parameter to 0.1\,m/s, compared to the
+Gazebo default of 100\,m/s. At 0.1\,m/s the contact solver is effectively unable
+to rapidly resolve penetrations in high-CoM configurations: when the arm extends
+forward, the manipulator mass raises the platform's effective centre of mass well
+above the wheel contact points; even a small solver disturbance then accumulates over
+multiple time steps rather than being corrected, eventually destabilising the base
+and causing it to tip forward. The parameter was removed, reverting to the Gazebo
+default (100\,m/s), which resolves contacts within a single integration step and
+yields stable simulation over the full navigation and manipulation cycle.

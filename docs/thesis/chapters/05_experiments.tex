@@ -8,7 +8,32 @@
 The tests were conducted in both simulated (Gazebo) and physical environments...
 
 \section{Mapping and Navigation Performance}
-% Metric data on localization accuracy and path execution time.
+
+\subsection{Map Quality After Sensor Correction}
+The SLAM mapping session was conducted twice: once with the erroneous $360^{\circ}$
+LiDAR configuration and once after the sensor parameters were corrected
+(Chapter~\ref{ch:implementation}). The resulting occupancy grids were compared
+by counting spurious obstacle cells in regions known to be unobstructed in the
+Gazebo world geometry. The uncorrected map contained 55 isolated occupied cells
+in open free space; the corrected map contained zero such cells. The corrected
+map spans 238$\times$358 cells at 0.05\,m/cell, covering the simulated workspace
+of approximately $11.9\,\text{m}\times17.9\,\text{m}$, with 97.2\,\% of cells
+classified as free. The absence of spurious cells is the primary quality gate for
+map acceptance, since a single phantom wall cell in a narrow corridor can render
+a planned path infeasible.
+
+\subsection{Navigation Success and Localisation Stability}
+The differential-drive navigation stack was validated by commanding the robot to
+a sequence of goals distributed around the simulated workspace, including a goal
+at the box pickup location. The robot reached all commanded goals without manual
+intervention. AMCL particle convergence was verified visually in RViz by confirming
+that the scan overlay remained aligned with the map walls throughout the navigation
+trajectory, including during in-place rotations at path start and end. Quantitative
+position error at goal arrival and localisation covariance data are reserved for
+the hardware deployment phase, where real odometry drift will produce non-trivial
+errors; in simulation with \texttt{odometry\_source: WORLD}, position error at goal
+is determined entirely by Nav2's goal tolerance parameter (0.05\,m linear,
+0.1\,rad angular) rather than by odometry accumulation.
 
 \section{Manipulation Precision}
 % Success rate of pick-and-place routines.
@@ -68,4 +93,54 @@ softened, the simulated manipulator executes a centred, vertical top-down grasp 
 lifts, holds, and replaces the target repeatably.
 
 \section{System Integration and Logistics Simulation}
-% The holistic test (multi-stage assembly logistics sequence).
+
+\subsection{End-to-End Navigation--Pick--Place Cycle}
+The full integrated task cycle was executed in simulation: the robot navigated
+autonomously from its starting position to the pickup table, docked visually to
+the box target, grasped and lifted the target object, and backed up from the
+table. The cycle was demonstrated successfully, with the grasped object remaining
+rigidly attached to the gripper throughout the backup manoeuvre. This constitutes
+a functional validation of the orchestration layer and confirms that the Nav2,
+perception, MoveIt, and weld-attachment subsystems cooperate correctly under a
+single coordinating node.
+
+\subsection{Arm Transport Posture and Inertial Stability During Navigation}
+A recurring fault during integration testing was joint oscillation at the arm's
+second joint during base navigation. Joint~2 of the myCobot~280 is a revolute
+joint with a horizontal rotation axis; in the rest (home) posture the distal arm
+links extend upward and forward, creating a significant lever arm about that axis.
+Under base acceleration forces this configuration acts as an inverted pendulum:
+the arm's inertia excites a low-frequency oscillation at joint~2 that persists
+for several seconds after the base stops. Joint~1, which has a vertical rotation
+axis, is not excited by forward--backward forces and exhibits no corresponding
+oscillation.
+
+The fix adopted is a compact transport posture (\texttt{travel}) in which joint~2
+is commanded to $+1.2$\,rad (folding the arm forward and down) before navigation
+begins. This reduces the moment arm of the distal link mass about joint~2 and
+lowers the overall system centre of mass closer to the base, attenuating inertially
+driven oscillations. The transport posture is commanded via MoveIt at the start of
+the orchestration sequence, before the Nav2 goal is sent, ensuring that the arm
+adopts the compact configuration before any base motion occurs.
+
+\subsection{Grasp-Weld Localisation: Stale Pose Failure and Live TF Fix}
+During initial integration testing the grasp-weld service incorrectly placed the
+simulated box after the robot had navigated to the table. Investigation revealed
+that the service stored the robot's world position once at node startup and used
+this value---without updating it---to compute the gripper's world position at grasp
+time. After navigation, the base occupies a different position; the stale startup
+position produced an incorrect world-frame gripper pose, causing the box to be
+placed at an incorrect location relative to the world rather than at the gripper.
+
+The fix replaces the stored startup position with a live TF lookup:
+\texttt{tf\_buffer.lookup\_transform(`odom', `gripper\_tcp')} is called at the
+moment of grasping. Because \texttt{odometry\_source: WORLD} makes the
+\texttt{odom} frame numerically identical to the Gazebo world frame, this lookup
+returns the gripper's true world position regardless of where the base has driven.
+With this correction, the box is placed at the correct gripper location and moves
+with the gripper as the arm lifts and the base reverses.
+
+This failure mode---a node consuming a pose derived from the system state at startup
+rather than at the time of use---is a common source of integration faults in mobile
+manipulation systems where the base is free to move between node initialisation and
+task execution.
