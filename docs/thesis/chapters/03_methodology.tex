@@ -7,6 +7,23 @@
 \section{System Overview}
 The proposed system relies on a tightly coupled software architecture leveraging ROS 2...
 
+\section{Drive Mode Selection: Differential Drive over Ackermann Steering}
+The LIMO PRO platform supports two drive modes: Ackermann steering (front-wheel steering
+with a fixed wheelbase turn radius) and differential drive (independent left--right wheel
+velocity commands). The system was initially prototyped in Ackermann mode, but a
+fundamental constraint of Ackermann kinematics made it unsuitable: a minimum-radius turn
+requires forward motion, which means the vehicle cannot rotate in place. For an
+approaching task---navigate to a box, stop in front, then align the gripper precisely---the
+inability to perform in-place rotation forces the planner into multi-arc arcing manoeuvres
+that are sensitive to odometry drift and make the final alignment geometry complex. The
+differential-drive mode removes this constraint entirely: the robot can spin in place to
+any heading after stopping, and the Nav2 \texttt{RotateInPlace} behaviour is natively
+supported. Additionally, the differential-drive odometry model requires only two
+parameters (wheel separation and wheel radius) and is directly verifiable against the
+physical platform's measured geometry, whereas Ackermann odometry involves a steering
+angle measurement that adds a calibration dependency. For these reasons, differential
+drive was adopted as the sole operational mode for all experiments in this work.
+
 \section{Mapping and Localization (SLAM)}
 Environment mapping is performed using SLAM Toolbox~\cite{macenski2021slam} in
 synchronous mapping mode, fusing LiDAR range data with wheel odometry to construct a

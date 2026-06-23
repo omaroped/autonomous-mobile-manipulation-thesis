@@ -265,6 +265,58 @@ position to the pickup table, any TF offset stored before navigation is invalida
 live lookup at the instant of grasping is always consistent regardless of the path
 taken by the base.
 
+\section{Simulation Rendering: Dual-GPU Segfault and NVIDIA PRIME Offload}
+A hardware-specific fault that is documented here because it affects reproducibility on
+consumer laptops commonly available in university laboratories. The development machine
+is equipped with both a discrete NVIDIA RTX~3060 Mobile GPU and an AMD Cezanne
+integrated GPU, configured in Linux PRIME on-demand mode. In this mode, applications
+render on the integrated GPU by default; the discrete GPU receives workloads only when
+explicitly requested via environment variables.
+
+Gazebo Classic's GPU sensor plugin (used by the depth camera) executed on the AMD
+integrated GPU in this configuration. The Gazebo depth-camera sensor consistently
+caused a segmentation fault (exit code $-11$, SIGSEGV) in \texttt{gzserver} during or
+immediately after model spawn, before any control loop had started. The fault occurred
+reliably under the default PRIME policy and did not occur under software rendering
+(\texttt{LIBGL\_ALWAYS\_SOFTWARE=1}), confirming the root cause as the OpenGL driver
+stack used by the integrated GPU rather than anything in the ROS or Gazebo configuration.
+
+Software rendering was used as a temporary workaround: it eliminated the crash at the
+cost of CPU-side rendering of the depth camera ($640\times400$ at 10\,Hz), which reduced
+the simulation's real-time factor to well below 1.0 and made interactive development
+slow. The permanent fix was to wire NVIDIA PRIME offload environment variables
+(\texttt{DRI\_PRIME=1}, \texttt{\_\_NV\_PRIME\_RENDER\_OFFLOAD=1},
+\texttt{\_\_GLX\_VENDOR\_LIBRARY\_NAME=nvidia}) into the Gazebo launch file's
+\texttt{additional\_env} dictionary, so that both \texttt{gzserver} and \texttt{gzclient}
+render on the RTX~3060 by default. This restored full GPU-accelerated rendering, with
+both processes confirmed via \texttt{nvidia-smi} to consume GPU memory on the discrete
+card (147\,MiB and 142\,MiB respectively), and the depth camera continued to publish
+correctly without any driver crash. No change to the ROS or Gazebo configuration was
+required beyond the environment variables in the launch file.
+
+This class of PRIME-related Gazebo crash is a known issue on Optimus/PRIME laptops under
+Ubuntu with proprietary NVIDIA drivers and is not specific to this platform; the fix
+described here is portable to any PRIME-configured machine.
+
+\section{RViz Configuration and MoveIt Panel Incompatibility}
+The default RViz configuration used for navigation monitoring (\texttt{nav\_pick.rviz})
+included a MoveIt \texttt{MotionPlanning} display panel. On the same dual-GPU machine,
+loading this configuration caused RViz to segfault during startup. The crash was
+consistent and hardware-specific: the MoveIt panel's robot model loading triggered the
+same AMD OpenGL driver issue identified in the previous section, but in this case the
+PRIME offload variables did not prevent it because RViz was launched as a child process
+that did not inherit the Gazebo launch environment.
+
+The fix was to create a dedicated navigation monitoring configuration
+(\texttt{nav\_monitor.rviz}) that is identical to \texttt{nav\_pick.rviz} except that
+the \texttt{moveit\_rviz\_plugin/MotionPlanning} display block is absent. The navigation
+monitoring view contains: RobotModel, TF tree, LaserScan, Map, global and local
+costmaps, the Nav2 planned path, and the RGB camera feed. MoveIt trajectory
+visualisation, when needed, is performed in a separate RViz session launched from within
+the MoveIt pipeline, where the PRIME environment is correctly propagated. This separation
+of navigation and manipulation visualisation contexts resolved the crash and is retained
+as a deliberate architectural choice.
+
 \section{Gazebo World Physics and Platform Stability}
 The Gazebo ODE physics engine's contact-correction velocity parameter
 (\texttt{contact\_max\_correcting\_vel}) governs the speed at which interpenetrating
