@@ -25,6 +25,8 @@ Everything needed to execute this thesis, from hardware on the bench to software
 
 | Item | Purpose | Status |
 |------|---------|--------|
+| **External M.2 NVMe SSD + USB 3.2 Enclosure** | **Native Ubuntu boot drive for full ROS 2 performance** | [ ] |
+| USB flash drive (8 GB+) | To create the Ubuntu 22.04 installer | [ ] |
 | USB keyboard + mouse | Direct interaction with Orin Nano | [ ] |
 | HDMI monitor / cable | Initial setup and debugging | [ ] |
 | USB-C hub | Peripheral connections | [ ] |
@@ -66,16 +68,17 @@ Everything needed to execute this thesis, from hardware on the bench to software
 | PyTorch + TensorRT | Compatible with JetPack | Perception models |
 | Python | 3.8+ | Scripting, perception, utilities |
 
-### On the Development Machine (Windows PC)
+### On the Development Machine
 
 | Software | Purpose |
 |----------|---------|
-| WSL2 + Ubuntu 22.04 | Local ROS 2 development and testing |
+| **Native Ubuntu 22.04 (on External SSD)** | **Local ROS 2 development, Gazebo simulation, full GPU/USB access** |
+| Windows 11 (Internal SSD) | General use, document writing |
 | VS Code + Remote SSH | Code editing on the Orin Nano |
 | Git | Version control |
 | TeX Live / MiKTeX | Thesis writing (LaTeX) |
-| Gazebo | Simulation (via WSL2 or dedicated Linux machine) |
 | Python 3.10+ | Local scripting, data analysis, plotting |
+| Gazebo Harmonic (on Ubuntu SSD) | Simulation with native GPU performance |
 | Blender (optional) | 3D visualization, URDF inspection |
 | Isaac Sim (optional) | NVIDIA simulation platform |
 
@@ -93,9 +96,10 @@ Everything needed to execute this thesis, from hardware on the bench to software
 
 Priority order for things you may not already have:
 
-1. **Colored LEGO Duplo blocks** — 5 colors, at least 10 of each. These are the standardized objects from the EAI-WS paper. Cheap and easy to get.
-2. **USB peripherals** — For initial Orin Nano setup (keyboard, mouse, HDMI cable).
-3. **Storage shelf** — The standard Bauhaus shelf (40×90×90 cm) referenced in the paper. ~€20.
-4. **Euro-boxes** — Grey, 30×40×12 cm. Optional but useful for container handling experiments. ~€5 each.
+1. **External M.2 NVMe SSD + USB-C 3.2 Gen 2 Enclosure** — Essential for a high-performance, native ROS 2 development environment without touching your internal Windows drive. (Alternatively: Samsung T7 Portable SSD).
+2. **Colored LEGO Duplo blocks** — 5 colors, at least 10 of each. These are the standardized objects from the EAI-WS paper. Cheap and easy to get.
+3. **USB peripherals** — For initial Orin Nano setup (keyboard, mouse, HDMI cable).
+4. **Storage shelf** — The standard Bauhaus shelf (40×90×90 cm) referenced in the paper. ~€20.
+5. **Euro-boxes** — Grey, 30×40×12 cm. Optional but useful for container handling experiments. ~€5 each.
 
 Everything else is software or things you likely already have access to through the university lab.
