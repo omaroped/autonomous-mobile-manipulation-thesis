@@ -1,0 +1,268 @@
+% Bachelor Thesis Exposé — FINAL MERGED
+% Compile with: pdflatex expose_final.tex
+
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{setspace}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{tabularx}
+\usepackage{hyperref}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{booktabs}
+\usepackage{tcolorbox}
+\usepackage{amssymb}
+
+% Colors
+\definecolor{primary}{RGB}{37,99,235}     % Blue
+\definecolor{heading}{RGB}{30,41,59}     % Slate
+\definecolor{body}{RGB}{51,65,85}        % Dark grey
+\definecolor{accent}{RGB}{220,38,38}     % Red for warning/note
+\definecolor{boxbg}{RGB}{248,250,252}    % Very light grey
+\definecolor{border}{RGB}{226,232,240}   % Border grey
+\definecolor{green}{RGB}{22,163,74}      % Green for preliminary work
+
+% Page style
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0pt}
+
+% Section formatting
+\titleformat{\section}{\Large\bfseries\color{heading}}{}{0em}{}[\vspace{-0.3em}\rule{\textwidth}{1.5pt}\color{primary}]
+\titleformat{\subsection}{\large\bfseries\color{heading}}{}{0em}{}
+\titleformat{\subsubsection}{\normalsize\bfseries\color{heading}}{}{0em}{}
+
+\begin{document}
+
+% Title / Header Area
+\begin{center}
+    \vspace*{1cm}
+    {\Huge\bfseries\color{heading} Bachelor Thesis Exposé\par}
+    \vspace{0.6cm}
+    {\Large\bfseries\color{primary} Autonomous Mobile Manipulation for On-Demand Manufacturing \\ Using the LIMO Cobot\par}
+    \vspace{1cm}
+    {\large By: Omar Alobaid, MSE, 29606\par}
+    \vspace{0.2cm}
+    {\large Supervisor: Prof.\ Ronny Hartanto\par}
+    \vspace{0.2cm}
+    {\large Date: June 2026\par}
+    \vspace*{1.5cm}
+\end{center}
+
+% =====================================================================
+\section{Title Alternatives}
+If the primary title is not preferred, the following options are proposed:
+\begin{itemize}[label=\textbullet, leftmargin=1.5em]
+    \item \textbf{Primary:} Autonomous Mobile Manipulation for On-Demand Manufacturing Using the LIMO Cobot
+    \item \textbf{Alternative 1:} Development and Evaluation of an Autonomous Pick-and-Place Pipeline on a Compact Mobile Manipulator
+    \item \textbf{Alternative 2:} Coordinated Navigation and Manipulation on the Agilex LIMO Cobot: From Simulation to Real-World Deployment
+    \item \textbf{Alternative 3:} Simulation-Based Development of a Mobile Manipulation System for Smart Manufacturing Applications
+\end{itemize}
+
+\vspace{0.5em}
+
+% =====================================================================
+\section{Research Questions}
+The central question that guides this research is:
+\begin{tcolorbox}[colback=boxbg, colframe=primary, arc=3pt, boxrule=1pt, left=1em, right=1em, top=1em, bottom=1em]
+    \textbf{Primary Research Question:}\\
+    Can a compact, resource-constrained, \textbf{non-holonomic} mobile manipulator (Agilex LIMO Cobot) autonomously perform pick-and-place tasks in a structured indoor manufacturing environment, and \textbf{how does simulation-based development translate to real-world deployment}?
+\end{tcolorbox}
+
+\subsection{Sub-Questions}
+\begin{enumerate}[label=\textbf{\arabic*.}, leftmargin=1.5em]
+    \item \textbf{Integration \& coordination.} How should the ROS\,2 navigation stack (Nav2) and manipulation framework (MoveIt\,2) be configured and coordinated on a single resource-constrained platform to enable autonomous mobile manipulation?
+    \item \textbf{Constraint handling.} How does the \textbf{non-holonomic (Ackermann) base combined with the limited arm reach} (280\,mm) constrain the base's final pose for grasping, and what final-approach strategy (e.g.\ visual docking) is required beyond standard Nav2 goal tolerances?
+    \item \textbf{Simulation-to-reality transfer.} What are the key challenges and performance gaps when transferring the simulation-developed pipeline to the physical platform --- which subsystems transfer directly, which fail, and what modelling or sensing assumptions cause the gap?
+\end{enumerate}
+
+\vspace{0.5em}
+
+% =====================================================================
+\section{Objectives}
+The core objectives of the thesis are:
+\begin{enumerate}[label=\textbf{\arabic*.}]
+    \item \textbf{System Integration} --- Design and implement a complete autonomous mobile manipulation pipeline on the LIMO Cobot, integrating Nav2 (navigation), MoveIt\,2 (collision-aware arm planning), and a depth-camera perception module within ROS\,2 Humble, coordinated by a mission state machine.
+    \item \textbf{Simulation Development} --- Develop and validate the full pipeline in a Gazebo simulation environment that accurately models the robot's kinematics, sensors, and a warehouse-like workspace, with physical parameters traceable to manufacturer specifications.
+    \item \textbf{Real-World Transfer} --- Deploy the simulation-validated pipeline onto the physical LIMO Cobot hardware (Jetson Orin Nano, myCobot 280 M5, Orbbec DaBai depth camera) and evaluate real-world performance. Transfer is staged subsystem-by-subsystem so that partial results are still meaningful.
+    \item \textbf{Experimental Evaluation} --- Systematically benchmark the system through quantitative experiments measuring task success rate, navigation accuracy, grasping reliability, cycle time, and the simulation-to-real gap.
+\end{enumerate}
+
+\newpage
+
+% =====================================================================
+\section{Scope and Limitations}
+\subsection{In Scope}
+\begin{itemize}[label=\checkmark, leftmargin=1.5em]
+    \item Autonomous navigation in a controlled, static indoor environment (flat ground, known layout, static obstacles).
+    \item \textbf{Ackermann (car-like) kinematic model} for the mobile base (minimum turning radius $\approx$\,0.4\,m; no in-place rotation).
+    \item 6-DoF arm manipulation (pick-and-place) of small standardised objects (coloured blocks).
+    \item Depth camera-based object detection and pose estimation.
+    \item Full pipeline evaluation in both Gazebo simulation and on the physical LIMO Cobot.
+    \item Coordinated state machine for sequencing navigation and manipulation tasks.
+\end{itemize}
+
+\subsection{Out of Scope}
+\begin{tcolorbox}[colback=boxbg, colframe=accent, arc=3pt, boxrule=1pt, left=1em, right=1em, top=0.5em, bottom=0.5em]
+    \textbf{Note:} This thesis shall \textbf{not} focus on:
+    \begin{itemize}[label=\textbullet, leftmargin=1em, topsep=0.2em, itemsep=0.2em]
+        \item Dynamic or outdoor environments.
+        \item Dynamic obstacle avoidance during manipulation.
+        \item Multi-robot coordination or fleet management.
+        \item Advanced or learned grasping strategies (e.g., reinforcement learning).
+        \item Multi-block stacking or product assembly (treated as future work).
+        \item Perception of arbitrary/unknown objects (predefined coloured blocks only).
+    \end{itemize}
+\end{tcolorbox}
+
+\subsection{Limitations (Honest Assessment)}
+\begin{itemize}[label=\textbullet, leftmargin=1.5em]
+    \item The single-block \textbf{pick--transport--place} cycle is the committed core task. Multi-block stacking requires sub-centimetre placement accuracy and stack stability that the current sensing and reach do not yet support; it is scoped as future work.
+    \item Real-world deployment is staged by subsystem; if hardware time is limited, the navigation and perception transfer will be demonstrated first, and a fully robust real-world run of the complete loop may remain partial. This is itself reported as a sim-to-real finding.
+    \item The Orbbec DaBai depth camera has a real minimum sensing distance of \textbf{0.30\,m}, which conflicts with the close grasp distance ($\approx$\,0.21\,m) --- this is a known constraint that will be characterised rather than fully solved.
+\end{itemize}
+
+\vspace{0.5em}
+
+% =====================================================================
+\section{Overview}
+Autonomous mobile manipulation --- the integration of autonomous navigation with robotic arm manipulation on a single platform --- is a core capability for on-demand manufacturing systems. In smart manufacturing scenarios, robots must navigate shared warehouse spaces, locate target objects, grasp and transport them to designated workstations, and place them with precision. This requires tight coordination between the mobile base, the manipulator, and the perception system, all running on resource-constrained onboard compute.
+
+This thesis explores the development, simulation, and real-world deployment of an autonomous pick-and-place pipeline on the \textbf{Agilex LIMO Cobot} --- a compact mobile manipulator combining a \textbf{car-like (Ackermann) mobile base} (LIMO PRO) with a 6-DoF robotic arm (Elephant Robotics myCobot 280 M5), an Orbbec DaBai depth camera, and an NVIDIA Jetson Orin Nano for onboard computation. The system is built within the \textbf{ROS\,2 Humble} ecosystem, leveraging \textbf{Nav2} for autonomous navigation (SmacPlannerHybrid with RegulatedPurePursuitController, selected for Ackermann feasibility), \textbf{MoveIt\,2} for collision-aware motion planning, and \textbf{Gazebo} for high-fidelity simulation.
+
+The work is situated in the context of the \textbf{Embodied Autonomous Intelligence Workshop (EAI-WS)} for the RoboCup Smart Manufacturing League, which defines structured tasks around warehouse logistics and workbench operations. The main experimental task involves a full pick-and-transport cycle: autonomously navigating to a workstation, detecting a coloured block using the depth camera, grasping it with the manipulator, transporting it, and placing it at a target position.
+
+A central theme of this thesis is the \textbf{simulation-to-real transfer}: the pipeline is first developed and validated entirely in Gazebo, then deployed onto the physical hardware to evaluate how well simulation-based development translates to real-world performance. The Ackermann steering constraint makes this transfer particularly interesting --- unlike omnidirectional or differential-drive robots, the car-like base cannot simply translate sideways to correct alignment errors, coupling the final base pose tightly to the arm's reachability. The evaluation focuses on task success rate, navigation accuracy, grasping reliability, end-to-end cycle time, and the quantitative gap between simulated and real-world results.
+
+\newpage
+
+% =====================================================================
+\section{Preliminary Work (Implemented and Verified)}
+
+\begin{tcolorbox}[colback=boxbg, colframe=green, arc=3pt, boxrule=1pt, left=1em, right=1em, top=0.8em, bottom=0.8em]
+A substantial part of the system is \textbf{already implemented} ($\approx$\,2,550 lines of original code across five subsystems), grounding the research questions in observed behaviour rather than intention.
+\end{tcolorbox}
+
+\begin{itemize}[label=\textbullet, leftmargin=1.5em, itemsep=0.6em]
+    \item \textbf{Platform model.} A combined Xacro model composes the LIMO base with laser, depth camera, and IMU, mounts the myCobot\,280 and adaptive gripper, defines a \texttt{gripper\_tcp} planning frame, and includes the \texttt{ros2\_control} configuration. Physical parameters have been audited against manufacturer specifications: track\,=\,0.175\,m, wheelbase\,=\,0.20\,m, DaBai H-FOV\,=\,67.9\textdegree, LiDAR\,360\textdegree/0.02--12\,m.
+
+    \item \textbf{Navigation.} Nav2 launch and configuration bring up the full lifecycle with an Ackermann-feasible planner (\texttt{SmacPlannerHybrid}, min turning radius\,=\,0.4\,m) and \texttt{RegulatedPurePursuitController}; localisation via AMCL on a pre-built map (produced with \texttt{slam\_toolbox}). \textit{Verified}: the base autonomously plans a feasible path (no in-place rotation) and drives $\approx$\,3\,m from spawn to the workstation.
+
+    \item \textbf{Perception.} A perception node segments the target block by HSV colour, extracts the contour centroid, samples depth in a 5$\times$5 median window, deprojects to 3-D using camera intrinsics, transforms to \texttt{base\_link} via TF2, and publishes the target pose.
+
+    \item \textbf{Manipulation.} An orchestrator drives the MoveIt\,2 \texttt{MoveGroup} action, inserts the table as a planning-scene collision object, and executes a calibrated top-down grasp sequence: ready $\rightarrow$ pre-grasp $\rightarrow$ grasp $\rightarrow$ weld $\rightarrow$ close $\rightarrow$ lift $\rightarrow$ retract. The MoveIt configuration (SRDF) includes a manually verified self-collision matrix for the combined arm--base robot.
+
+    \item \textbf{Middleware fixes.} A patched \texttt{gazebo\_ros2\_control} plugin resolves a C++ compatibility issue between Gazebo Classic and ROS\,2 Humble's controller manager. Custom simulation nodes (\texttt{grasp\_attacher}, \texttt{base\_pin}) compensate for Gazebo physics instabilities during manipulation.
+\end{itemize}
+
+\subsection{Identified Engineering Challenges}
+The following challenges have been \textbf{discovered through implementation} and form the technical core of the thesis:
+\begin{enumerate}[label=\textbf{\arabic*.}, leftmargin=1.5em, itemsep=0.4em]
+    \item \textbf{Non-holonomic final approach} --- Nav2's goal tolerance leaves a lateral/heading error too large for grasping; the car-like base cannot translate sideways to correct it, motivating a dedicated visual-docking stage.
+    \item \textbf{Collision model mismatch} --- the base uses coarse collision primitives while the arm uses accurate meshes; when combined, MoveIt reports phantom collisions that block all planning, requiring manual collision-matrix engineering (253 pairs reduced to 125).
+    \item \textbf{Command arbitration} --- Nav2's velocity smoother and the docking controller contend for \texttt{/cmd\_vel}, requiring explicit lifecycle phase hand-off between navigation and manipulation.
+    \item \textbf{Close-range perception gap} --- the depth camera over-reports object distance at close range ($\approx$\,0.27\,m measured vs.\ 0.18\,m ground truth), causing the planner to target a point beyond the arm's reach.
+    \item \textbf{Traction vs.\ numerical stability} --- low wheel friction prevents an ODE contact instability (robot ``explodes'') but induces rear-wheel slip; a fidelity trade-off with direct sim-to-real relevance.
+\end{enumerate}
+
+\newpage
+
+% =====================================================================
+\section{Weekly Task Plan}
+\textbf{Timeline:} 14 Weeks (+ 2 Weeks Buffer). The simulation integration is \textbf{largely in place}; the plan front-loads literature synthesis and back-loads evaluation and writing, which are the current gaps.
+
+\vspace{1em}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabularx}{\textwidth}{c l X}
+\toprule
+\textbf{Week} & \textbf{Focus Area} & \textbf{Tasks} \\
+\midrule
+\textbf{1} & Framing \& Literature & Lock research questions; literature review (mobile manipulation, Nav2/MoveIt integration, sim-to-real); Ch.\ 1--2. \\
+\textbf{2} & Model Consolidation & Finalise audited URDF/sensors; reproducible build/run procedure; Ch.\ 2. \\
+\textbf{3} & Navigation & Harden Ackermann Nav2 configuration; map refinement; autonomous goal runs; Ch.\ 3. \\
+\textbf{4} & Final Approach & Visual-docking stage; \texttt{/cmd\_vel} phase hand-off; Ch.\ 3. \\
+\textbf{5} & Manipulation & MoveIt grasp + place action; attached-object handling; Ch.\ 3--4. \\
+\textbf{6} & Perception & HSV+depth pose estimation; quantify close-range depth bias; Ch.\ 4. \\
+\textbf{7} & Pipeline Integration & End-to-end state machine (navigate $\rightarrow$ pick $\rightarrow$ transport $\rightarrow$ place); Ch.\ 4. \\
+\textbf{8} & Sim-to-Real Study & Model-vs-spec analysis; hardware bring-up (staged); Ch.\ 4--5. \\
+\textbf{9} & Navigation Experiments & Protocol + quantitative runs (success, accuracy, drift); Ch.\ 5. \\
+\textbf{10} & Manipulation Experiments & Grasp/placement success under pose uncertainty; Ch.\ 5. \\
+\textbf{11} & Full Pipeline Evaluation & End-to-end benchmarking (sim vs.\ real); results \& plots; Ch.\ 5. \\
+\textbf{12} & Core Chapters & Finalise Chapters 1--4 (Intro, Background, Methodology, System Design). \\
+\textbf{13} & Results \& Conclusion & Write Chapters 5--7 (Experiments, Results, Conclusion); full draft. \\
+\textbf{14} & Review \& Defence & Supervisor feedback cycles, defence preparation, submission. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Visual Timeline}
+\begin{verbatim}
+Week  1  2  3  4  5  6  7  8  9 10 11 12 13 14  [Buffer]
+      |-----|                                      Literature Synthesis
+      |---------|                                  Model & Build
+               |-----|                             Navigation
+                     |-----|                       Manipulation + Perception
+                           |--|                    Integration
+                              |--|                 Sim-to-Real Study
+                                 |--------|        Experiments
+      |-------------------------------------------  Documentation
+                                          |-----|  Final Writing
+                                                |- Defence & Submission
+\end{verbatim}
+
+\subsection{Milestones}
+\begin{table}[h]
+\centering
+\small
+\begin{tabularx}{\textwidth}{l c X}
+\toprule
+\textbf{Milestone} & \textbf{Target Week} & \textbf{Deliverable} \\
+\midrule
+\texttt{m1-questions} & 1 & Locked research questions + literature review outline. \\
+\texttt{m2-navigation} & 3 & Reproducible autonomous Ackermann navigation in simulation. \\
+\texttt{m3-pick-place} & 5 & MoveIt pick \textbf{and place} of a single block in Gazebo. \\
+\texttt{m4-integration} & 7 & End-to-end navigate$\rightarrow$pick$\rightarrow$transport$\rightarrow$place demo in simulation. \\
+\texttt{m5-experiments} & 11 & Completed quantitative datasets + sim-to-real gap analysis. \\
+\texttt{thesis-draft-1} & 13 & Complete first full thesis draft. \\
+\texttt{thesis-final} & 14 & Final thesis submitted and approved. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+% =====================================================================
+\section{Risks and Mitigation}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabularx}{\textwidth}{X X}
+\toprule
+\textbf{Risk} & \textbf{Mitigation} \\
+\midrule
+Real-hardware time is limited (the main risk). & Stage transfer by subsystem (navigation $\rightarrow$ perception $\rightarrow$ manipulation $\rightarrow$ full loop) so partial deployment still yields publishable sim-vs-real results. \\
+\addlinespace
+Perception unreliable at grasp range (DaBai blind $<$\,0.30\,m). & Treat as a central \textit{finding}; mitigate with perceive-then-approach strategy; on hardware, evaluate camera-placement alternatives. \\
+\addlinespace
+Timeline already partially consumed. & Front-load open gaps (literature, evaluation harness, place action); the simulation integration is largely complete. \\
+\addlinespace
+Multi-block stacking proves infeasible. & Explicitly scoped as future work; single-block cycle is the core deliverable. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\vspace{0.5em}
+
+% =====================================================================
+\section{References}
+
+Literature synthesis is an explicit Week-1 deliverable (currently a gap). The review will cover: ROS\,2 mobile manipulation systems; Nav2 planners and controllers for non-holonomic (Ackermann) bases; MoveIt\,2 motion planning and planning-scene management; RGB-D perception for known objects; and simulation-to-reality transfer in robotics. A working bibliography is maintained in \texttt{docs/thesis/bibliography.bib}.
+
+\end{document}

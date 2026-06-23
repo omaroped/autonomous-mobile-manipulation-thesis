@@ -1,0 +1,28 @@
+// The grasp sequence. Each box is one MoveIt goal or one gripper/weld command.
+// Render:  dot -Tsvg grasp_state_machine.dot -o grasp_state_machine.svg
+digraph grasp {
+  rankdir=TB;
+  graph [fontname="Helvetica", fontsize=12, labelloc=t,
+         label="Grasp state machine  (each step waits for the previous to finish)"];
+  node  [fontname="Helvetica", fontsize=10, shape=box, style="rounded,filled",
+         fillcolor="#fff4e3", color="#ef9a3a"];
+  edge  [fontname="Helvetica", fontsize=9, color="#666666"];
+
+  ready    [label="ready\n(named joint pose)", fillcolor="#dcecfe", color="#4a90d9"];
+  open1    [label="open gripper"];
+  scene    [label="add table to planning scene", fillcolor="#e4cffb", color="#9b59b6"];
+  pre      [label="pre-grasp\n(hover, fingers DOWN)", fillcolor="#e4cffb", color="#9b59b6"];
+  grasp    [label="grasp\n(descend, straddle box)", fillcolor="#e4cffb", color="#9b59b6"];
+  weldon   [label="WELD on\n(bond box ↔ gripper)", fillcolor="#ffcf9f"];
+  close    [label="close gripper (gentle)"];
+  lift     [label="lift\n(box RISES with arm)", fillcolor="#e4cffb", color="#9b59b6"];
+  place    [label="place\n(move + lower)", fillcolor="#e4cffb", color="#9b59b6"];
+  open2    [label="open gripper"];
+  weldoff  [label="WELD off (release)", fillcolor="#ffcf9f"];
+  ready2   [label="ready", fillcolor="#dcecfe", color="#4a90d9"];
+
+  ready -> open1 -> scene -> pre -> grasp -> weldon -> close -> lift -> place -> open2 -> weldoff -> ready2;
+
+  legend [shape=note, fillcolor="#fffbe0", color="#caa400", fontsize=9,
+          label="blue = joint goal   purple = Cartesian goal (MoveIt)\norange = gripper   tan = sim 'weld' (attach-on-grasp)"];
+}

@@ -1,0 +1,27 @@
+// TF coordinate-frame tree: parent → child. This is "where is everything".
+// Render:  dot -Tsvg tf_tree.dot -o tf_tree.svg
+digraph tf {
+  rankdir=LR;
+  graph [fontname="Helvetica", fontsize=12, labelloc=t,
+         label="TF frame tree  (each arrow = a known transform parent → child)"];
+  node  [fontname="Helvetica", fontsize=10, shape=box, style="rounded,filled",
+         fillcolor="#eef6ff", color="#4a90d9"];
+  edge  [fontname="Helvetica", fontsize=8, color="#666666"];
+
+  world -> base_footprint -> base_link;
+
+  // the arm chain (this is the MoveIt 'arm' planning group)
+  base_link -> joint1 -> joint2 -> joint3 -> joint4 -> joint5 -> joint6 -> joint6_flange -> gripper_base -> gripper_tcp;
+  node [fillcolor="#fff4e3", color="#ef9a3a"];
+  joint1; joint2; joint3; joint4; joint5; joint6; joint6_flange; gripper_base; gripper_tcp;
+
+  // sensors hang off base_link
+  node [fillcolor="#eafbea", color="#4caf50"];
+  depth_camera_link; laser_link; imu_link;
+  base_link -> depth_camera_link [label="camera (+0.10 m fwd)"];
+  base_link -> laser_link        [label="LiDAR"];
+  base_link -> imu_link          [label="IMU"];
+
+  label_note [shape=note, fillcolor="#fffbe0", color="#caa400",
+              label="Perception finds the box in depth_camera_link,\nthen TF converts it into base_link for the arm."];
+}

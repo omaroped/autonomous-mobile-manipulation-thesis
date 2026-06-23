@@ -1,40 +1,91 @@
-% Thesis Main Document
-% This is a minimal skeleton. Build it out chapter by chapter.
+\documentclass[12pt, a4paper, twoside]{report}
 
-\documentclass[12pt, a4paper]{report}
-
+% --- Essential Packages ---
 \usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
+\usepackage[english]{babel}
 \usepackage{graphicx}
-\usepackage{amsmath}
-\usepackage{hyperref}
-\usepackage{cite}
+\usepackage{amsmath, amssymb}
 \usepackage{geometry}
-\geometry{margin=2.5cm}
+\geometry{a4paper, margin=2.5cm} % Standard margins
+\usepackage{setspace}
+\onehalfspacing % 1.5 line spacing (Standard for theses)
+\usepackage[hidelinks]{hyperref}
+\usepackage{cite}
+\usepackage{titlesec}
+\usepackage{caption}
 
-\title{Mobile Manipulation for On-Demand Manufacturing \\ with the Agilex LIMO Cobot}
-\author{Omar [Last Name]}
-\date{\today}
+% --- Cover Page Formatting ---
+\title{
+    \vspace*{2cm}
+    \textbf{\Large Autonomous Mobile Manipulation for Multi-Stage Assembly and Logistics in Smart Manufacturing} \\
+    \vspace{1.5cm}
+    \large Master's Thesis \\
+    \vspace{1cm}
+    \normalsize Submitted in partial fulfillment of the requirements for the degree at \\
+    Rhine-Waal University of Applied Sciences (HSRW)
+}
+\author{
+    \textbf{Omar} \\ 
+    \normalsize Matriculation Number: [Insert Number] \\ \\
+}
+\date{\vfill \today}
 
 \begin{document}
 
 \maketitle
 
+% --- Frontmatter ---
+\pagenumbering{roman} % Roman numerals for front parts
+
 \begin{abstract}
-% Write this last, after the rest of the thesis is done.
+\input{chapters/00_abstract}
 \end{abstract}
 
+\chapter*{Acknowledgements}
+\addcontentsline{toc}{chapter}{Acknowledgements}
+\input{chapters/00_acknowledgements}
+
 \tableofcontents
+\listoffigures
+\listoftables
+\clearpage
 
+% --- Main Body ---
+\pagenumbering{arabic} % Arabic numerals for the main text
+
+\chapter{Introduction}
 \input{chapters/01_introduction}
-% \input{chapters/02_background}
-% \input{chapters/03_methodology}
-% \input{chapters/04_system_design}
-% \input{chapters/05_experiments}
-% \input{chapters/06_results}
-% \input{chapters/07_conclusion}
 
-\bibliographystyle{plain}
+\chapter{Literature Review}
+\input{chapters/02_literature_review}
+
+\chapter{Methodology}
+\input{chapters/03_methodology}
+
+\chapter{System Architecture and Implementation}
+\input{chapters/04_implementation}
+
+\chapter{Experiments and Results}
+\input{chapters/05_experiments}
+
+\chapter{Conclusion and Future Work}
+\input{chapters/06_conclusion}
+
+% --- Bibliography ---
+\bibliographystyle{ieeetr} % IEEE citation style is standard for engineering/robotics
 \bibliography{bibliography}
+
+% --- Declaration of Independent Work ---
+\chapter*{Declaration of Independent Work}
+\addcontentsline{toc}{chapter}{Declaration of Independent Work}
+I hereby declare that this thesis is my own original work and has not been submitted, in whole or in part, for any other degree or qualification at this or any other institution. All sources and aids used have been fully acknowledged and referenced.
+
+\vspace{2cm}
+\noindent
+\begin{tabular}{@{}p{6cm}p{6cm}@{}}
+\hrulefill & \hrulefill \\
+Place, Date & Signature
+\end{tabular}
 
 \end{document}

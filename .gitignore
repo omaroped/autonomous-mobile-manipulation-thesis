@@ -69,3 +69,73 @@ simulation/**/*.log
 *.bag
 *.db3
 *.mcap
+
+# ============================
+# Cleanup 2026-06-19 (workspace tidy)
+# ============================
+
+# ----- Root-level colcon artifacts (in case colcon is ever run from root) -----
+/build/
+/install/
+/log/
+
+# ----- All backup files -----
+*.bak
+
+# ----- Node / web build artifacts (course website) -----
+node_modules/
+
+# ----- CV LaTeX build artifacts (keep cv.tex + cv.pdf) -----
+cv/*.aux
+cv/*.log
+cv/*.out
+cv/*.toc
+cv/*.synctex.gz
+
+# ----- Archived / backup project trees (kept on disk, not tracked) -----
+_archive/
+backup_before_collision_fix/
+
+# ----- Separate sibling projects embedded in this tree (own git repos) -----
+smart-manufacturing-nav/
+my-ai-project/
+
+# ============================
+# Cleanup 2026-06-23
+# ============================
+
+# ----- External ROS packages (have their own upstream git repos — not our code) -----
+src/ros2_ws/src/mycobot_ros2/
+src/ros2_ws/src/gazebo_ros2_control/
+
+# ----- ROS bag WAL/SHM sidecar files -----
+*.db3-wal
+*.db3-shm
+
+# ----- ROS bag recording directories -----
+data/limo_manual_run1/
+src/ros2_ws/limo_manual_run1/
+src/ros2_ws/limo_real_run2/
+
+# ----- ROS workspace build/test logs -----
+src/ros2_ws/build_out.txt
+src/ros2_ws/build_err.txt
+src/ros2_ws/build_stdout.txt
+src/ros2_ws/build_stderr.txt
+src/ros2_ws/mec_smoke.log
+
+# ----- AI agent / tool artifacts -----
+src/ros2_ws/.agents/
+src/ros2_ws/.antigravitycli/
+.claude/
+sync_memory.sh
+
+# ----- Obsidian editor config -----
+docs/.obsidian/
+
+# ----- AI-generated prompt/memory artifacts (not thesis content) -----
+docs/super_memory/
+docs/SUPER_MEMORY_PROMPT.md
+docs/SUPER_MEMORY_PROMPT_v2_EXTENSION.md
+CLEANUP_REPORT.md
+docs/REORG_REPORT.md

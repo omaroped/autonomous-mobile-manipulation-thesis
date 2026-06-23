@@ -1,0 +1,159 @@
+% ----------------------------------------------------------------------------------
+% Chapter 4: System Architecture and Implementation
+% ----------------------------------------------------------------------------------
+% Detail the hardware (LIMO Cobot, MyCobot, Jetson Orin Nano) and the software (ROS 2 nodes, topics, actions).
+
+\section{Hardware Platform}
+The Agilex LIMO Cobot integrates a mobile base with...
+
+\section{Software Architecture in ROS 2}
+The software stack is built sequentially using independent, communicating nodes...
+
+\section{Simulation Environment (Gazebo)}
+The system is developed within a simulation-to-reality (sim-to-real) workflow in which Gazebo
+Classic constitutes the first phase rather than the end goal. The complete navigation,
+perception, and manipulation pipeline is built and validated in simulation---where errors carry
+no hardware cost, the scenario is fully observable, and the world can be reset
+deterministically---before the same ROS~2 system is deployed onto the physical LIMO and
+myCobot~280 platform available in the laboratory. The simulated robot is constructed to mirror
+the real platform's kinematics, sensor placement, and coordinate frames as closely as is
+practical, so that the transition to hardware alters only the lowest layer of the stack: the
+Gazebo physics and sensor plugins are replaced by the corresponding hardware drivers, while the
+perception, motion-planning, and orchestration nodes are reused unchanged. This separation of a
+hardware-agnostic upper stack from a substitutable hardware layer is the principal engineering
+rationale for prioritising a high-fidelity simulation.
+
+\section{Perception Subsystem}
+Object localisation is performed by a deliberately lightweight, classical
+computer-vision pipeline rather than a learned detector, on the grounds of
+transparency, the absence of training data, and ease of diagnosis for a single
+known-coloured target. The depth camera publishes an RGB image, a registered depth
+image, and the camera intrinsics. The target is segmented in the HSV colour space
+(robust to illumination relative to raw RGB), and the centroid pixel $(u,v)$ is
+extracted. The corresponding depth $Z$ is read from the depth image and the pixel is
+de-projected into a metric point in the camera frame using the pin-hole model,
+$X = (u-c_x)Z/f_x$, $Y = (v-c_y)Z/f_y$. This point is transformed into the
+manipulator planning frame (\texttt{base\_link}) via the TF tree and published as a
+\texttt{PoseStamped} on \texttt{/box\_pose}. A documented limitation of the layout is
+that the manipulator's reachable workspace lies partly inside the camera's near-clip
+distance, so the reachable grasp region and the camera-visible region only narrowly
+overlap; this is analysed quantitatively in Chapter~\ref{ch:experiments}.
+
+\section{Motion Planning with MoveIt~2}
+Arm motion is planned with MoveIt~2. As the Python bindings (\texttt{moveit\_py}) are
+not packaged for the target distribution (ROS~2 Humble), the orchestration node
+communicates with the running \texttt{move\_group} through the standard
+\texttt{moveit\_msgs} action and service interfaces over \texttt{rclpy}, requiring no
+additional dependencies. The semantic model (SRDF) defines the six-joint planning
+group, named configurations, and the link-pair collision matrix; inverse kinematics
+is solved by the KDL plugin and paths are searched by OMPL's RRTConnect. Each grasp
+sub-goal (pre-grasp, grasp, lift, place) is issued as a Cartesian pose goal; the
+planner computes a collision-checked joint trajectory from the current state, which is
+executed by the \texttt{ros2\_control} joint-trajectory controller. The gripper is
+driven outside MoveIt by direct position commands, with ramped set-points to avoid the
+impulsive contact forces that a step command induces.
+
+\section{Engineering Challenge: An Incomplete Collision Matrix}
+A significant integration fault is documented here because its diagnosis illustrates a
+class of failure common to MoveIt deployments. Joint-space goals executed correctly,
+yet \emph{every} Cartesian goal was rejected and the arm folded to its home
+configuration. Direct interrogation of the inverse-kinematics service confirmed the
+targets were reachable, and the state-validity service confirmed both start and goal
+configurations were collision-free; planning nonetheless failed whenever the waist
+joint deviated from zero. Examination of the planner log and interpolation of the
+candidate path through the state-validity checker revealed a phantom self-collision:
+the auto-generated collision matrix disabled checks between the gripper \emph{fingers}
+and the mobile base, but omitted the wrist body links (\texttt{gripper\_base},
+\texttt{joint6}, \texttt{joint6\_flange}). Consequently, any forward-facing
+configuration was incorrectly reported as colliding with the base wheels, steering,
+laser, and camera, and was refused. Restoring the omitted \texttt{disable\_collisions}
+entries resolved all Cartesian planning. The episode underlines that an incomplete
+semantic collision model silently invalidates motion planning while leaving joint-space
+control unaffected, and that disciplined, service-level verification is required to
+localise the cause.
+
+\section{Simulation Physical Fidelity and Stability}
+Obtaining numerically stable behaviour in Gazebo Classic required several specific
+measures, each addressing a distinct failure mode. First, every link's inertia tensor
+must satisfy the rigid-body triangle inequalities, $I_{xx}+I_{yy}\ge I_{zz}$ and its
+cyclic permutations; a manufacturer-supplied tensor that violates this condition causes
+the ODE solver to evaluate an undefined state and the model to diverge immediately on
+load. Second, rigid-body contact between a position-controlled gripper and a support
+surface generates large separating impulses that destabilise a comparatively light and
+unconstrained base; this was mitigated by terminating descents clear of supporting
+surfaces, registering those surfaces as planning-scene collision objects, ramping
+gripper set-points to avoid impulsive commands, constraining the base pose during
+manipulation, and---most directly---softening the surface contact model by lowering its
+stiffness and capping the ODE contact-correction velocity (\texttt{max\_vel}), so that
+any residual penetration is resolved gently rather than as an explosive impulse. Third,
+the mobile base exhibits uncommanded creep under solver noise and
+manipulator reaction forces unless the drive joints specify explicit friction and
+damping. Fourth, because Gazebo Classic does not enforce URDF mimic constraints, the
+passive joints of the parallel gripper must be driven through the \texttt{ros2\_control}
+hardware interface to remain kinematically consistent. A related fault was a
+half-configured gripper in which the controller commanded a single master joint while
+the finger joints were declared as both mimic and command interfaces; this contradictory
+specification left the gripper inert. It was resolved by driving all six gripper joints
+directly with mirror-signed set-points, which is robust to Gazebo Classic's unreliable
+mimic handling. These measures are characteristic of manipulator simulation in Gazebo
+Classic and are reported as part of the methodology.
+
+\section{Model Fidelity and Parameter Verification}
+Because the simulation is the first phase of a sim-to-real workflow, the physical
+parameters of the model must correspond to the real platform; an unverified value
+silently introduces a discrepancy that surfaces only on hardware. A systematic audit was
+therefore performed, tracing every physically meaningful parameter in the URDF and
+sensor descriptions to a manufacturer specification, or else explicitly designating it
+as a simulation-tuning or test-scenario value. The platform was confirmed from the
+procurement record to be the AgileX LIMO~PRO with an Elephant Robotics myCobot~280, an
+Orbbec DaBai depth camera, an EAI~T-mini~Pro LiDAR, and an NVIDIA Jetson Orin~Nano.
+Cross-checking the model against these specifications revealed and corrected several
+inherited errors: the wheel track ($0.14\rightarrow0.175$\,m), the depth-camera
+horizontal field of view ($80^{\circ}\rightarrow67.9^{\circ}$) and depth range and
+resolution ($0\text{--}8\rightarrow0.3\text{--}3$\,m, $640\times480\rightarrow640\times400$),
+and the LiDAR field of view and range
+($240^{\circ},\,0.2\text{--}8\,\text{m}\rightarrow360^{\circ},\,0.02\text{--}12\,\text{m}$).
+The adaptive gripper's clamping range was confirmed from its datasheet as $20\text{--}45$\,mm,
+informing the choice of a $30$\,mm manipulation target.
+
+The audit also surfaced the most consequential sim-to-real discrepancy. The physical
+Orbbec DaBai has a minimum depth of $0.30$\,m, whereas the simulated sensor's near-clip
+had been lowered to $0.05$\,m so that a close target remained visible. An object at the
+$\approx0.21$\,m grasp distance is therefore visible in simulation but lies
+\emph{inside the blind spot of the physical camera}. This is retained deliberately and
+flagged: the physical system must perceive the target from a greater stand-off distance
+and approach under a remembered pose, rather than perceive-and-grasp in place. The
+governing principle adopted is that no physical parameter may remain an unjustified
+constant: each must trace to a specification or be tagged as tuning or test.
+
+\section{Tool-Frame Calibration and Grasp Geometry}
+Reliable grasping required calibrating the manipulator's tool frame, a step whose
+necessity is itself a finding. Three geometric corrections were identified. First, the
+planning frame \texttt{gripper\_tcp} is not coincident with the centre of the finger
+gap, so aiming the planning frame at the target left the fingers offset by approximately
+one centimetre; this was corrected with a constant lateral grasp offset. Second, the
+pose-goal orientation tolerance, initially $0.5$\,rad ($\approx29^{\circ}$), was large
+enough to admit visibly tilted ``top-down'' solutions; tightening it to $0.1$\,rad
+produced a vertical gripper. Third, the adaptive gripper's fingers translate downward as
+they close, so the closed tool reaches lower than the open tool; the grasp height was
+raised so that the closing fingers clear the support surface. These corrections---lateral
+offset, orientation tolerance, and closing clearance---constitute the tool-frame
+calibration that, on the physical robot, generalises to a combined hand--eye and
+tool-centre-point calibration.
+
+\section{Self-Collision Policy: Manipulator versus Mobile Base}
+A deliberate modelling decision concerns collision checking between the manipulator and
+the mobile-base body. The two subsystems are modelled at different collision fidelities:
+the arm links carry accurate convex meshes, whereas the base and sensors are represented
+by coarse primitive volumes. The base collision primitive extends into the volume the
+folded arm occupies, so enabling arm--body collision checking produces false-positive
+(phantom) collisions even in postures where the physical parts do not touch; empirically
+this rendered \emph{every} configuration, including the home posture, unplannable.
+Arm--body checks are therefore disabled in simulation, while manipulator self-collision
+(arm against arm) remains fully enabled, so the dominant hazard---the arm folding into
+its own links---is still prevented. This is safe with respect to the physical robot,
+which carries accurate factory collision geometry and the manufacturer's semantic model,
+in which arm--body collision is checked correctly. The disable is thus a
+simulation-modelling accommodation for coarse meshes, not a removal of real-robot
+safety; the corresponding refinement---tighter base meshes and regeneration of the
+collision matrix---is identified as future work.
