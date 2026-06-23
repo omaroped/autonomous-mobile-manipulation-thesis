@@ -1,0 +1,83 @@
+<?xml version="1.0"?>
+<robot name="limo_ackermann" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+    <!-- use_camera:=false drops the GPU depth camera (driving/nav demos with the GUI),
+         which avoids the intermittent Gazebo Classic depth-camera segfault under load. -->
+    <xacro:arg name="use_camera" default="true"/>
+    <xacro:property name="use_camera" value="$(arg use_camera)"/>
+
+    <xacro:include filename="$(find limo_car)/gazebo/ackermann.xacro" />
+    <xacro:include filename="$(find limo_car)/gazebo/sensor.xacro" />
+
+    <!-- Instantiate the robot base -->
+    <xacro:limo_ackermann />
+
+    <!-- ************************* Laser ****************************** -->
+    <xacro:gazebo_laser frame_prefix="laser" />
+
+    <joint name="laser_joint" type="fixed">
+        <origin xyz="0.1236 0 -0.01" rpy="0 0 0"/>   <!-- realistic LIMO front-low mount; works now that the laser's own collision is 0.001 (was blinded by a 0.032 self-collision puck) -->
+        <parent link="base_link"/>
+        <child link="laser_link"/>
+    </joint>
+
+    <!-- ************************* Depth-camera *********************** -->
+    <xacro:if value="${use_camera}">
+        <xacro:gazebo_depth_camera frame_prefix="depth_camera" />
+
+        <joint name="depth_camera_joint" type="fixed">
+            <origin xyz="0.1 0 0.065" rpy="0 0 0"/>
+            <parent link="base_link"/>
+            <child link="depth_camera_link"/>
+        </joint>
+    </xacro:if>
+
+    <!-- ************************* IMU ******************************** -->
+    <xacro:gazebo_imu frame_prefix="imu" />
+
+    <joint name="imu_joint" type="fixed">
+        <origin xyz="0.0 0 -0.1" rpy="0 0 0"/>
+        <parent link="base_link"/>
+        <child link="imu_link"/>
+    </joint>
+
+    <!-- ************************* MyCobot 280 Arm ************************ -->
+    <xacro:include filename="$(find mycobot_description)/urdf/mycobot_280_m5/mycobot_280_m5.urdf" />
+    <xacro:mycobot_280 />
+    
+    <joint name="mycobot_base_joint" type="fixed">
+        <!-- Arm CENTERED on the robot top plate (between the camera and the screen),
+             per the intended physical layout. Reach to the box is solved by the base
+             stopping closer and by workspace placement — NOT by shoving the arm
+             forward (that jammed it against the camera). Do not move this for reach. -->
+        <origin xyz="-0.03 0 0.02" rpy="0 0 1.5708"/>
+        <parent link="base_link"/>
+        <child link="joint1"/>
+    </joint>
+
+    <!-- ************************* MyCobot Adaptive Gripper *************** -->
+    <xacro:include filename="$(find mycobot_description)/urdf/adaptive_gripper/mycobot_adaptive_gripper.urdf" />
+    <xacro:mycobot_gripper />
+
+    <joint name="gripper_to_arm_joint" type="fixed">
+        <origin xyz="0.0 0 0.034" rpy="1.579 0 1.5708"/>
+        <parent link="joint6_flange"/>
+        <child link="gripper_base"/>
+    </joint>
+
+    <!-- ************************* Grasp Frame (TCP) ********************** -->
+    <!-- Tool Center Point used by MoveIt as the arm-group tip / IK target.
+         Starts coincident with gripper_base (no guessed numbers); the real
+         fingertip offset is calibrated visually in Stage 1. Pure massless
+         frame: no visual/collision/inertial, so Gazebo treats it as TF only. -->
+    <link name="gripper_tcp"/>
+    <joint name="gripper_base_to_tcp" type="fixed">
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <parent link="gripper_base"/>
+        <child link="gripper_tcp"/>
+    </joint>
+
+    <!-- ************************* ROS 2 Control ************************** -->
+    <xacro:include filename="$(find limo_car)/gazebo/mycobot_ros2_control.xacro" />
+
+</robot>

@@ -1,0 +1,220 @@
+<?xml version="1.0"?>
+<!-- Autor: Zhui Li -->
+<!--E-Mail: lz554113510@gmail.com -->
+<!--Company: Institut fuer Intermodale Transport und Logistiksysteme in Technische Universitaet Braunschweig -->
+<!-- Description: Diese xacro-Datei basiert auf Regeln und definiert Funktionen durch xacro,
+um die Erstellung der weitere Simulation fuer Sensoren in Gazebo ermoeglichen. -->
+
+<robot name="limo_sensor" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+    <!-- ******************************* Makrofunktion für Laser-Sensor ***************************** -->
+    <xacro:macro name="gazebo_laser" params="frame_prefix">
+        <link name='${frame_prefix}_link'>
+            <inertial>
+                <mass value="0.1"/>
+                <origin xyz="0.0 0 0" rpy="0 0 0"/>
+                <inertia
+                        ixx="1e-6" ixy="0" ixz="0"
+                        iyy="1e-6" iyz="0"
+                        izz="1e-6"
+                />
+            </inertial>
+            <visual name='laser_visual'>
+                <origin xyz="0 0 0" rpy="0 0 0"/>
+                <geometry>
+                    <cylinder radius="0.02" length="0.01"/>
+                </geometry>
+                <material name='laser_material'>
+                    <color rgba="1 1 1 1" />
+                    <ambient>0.1 0.1 0.1 1</ambient>
+                    <diffuse>0.1 0.1 0.2 1</diffuse>
+                    <specular>0 0 0 0</specular>
+                    <emissive>0 0 0 1</emissive>
+                </material>
+            </visual>
+            <collision name='laser_collision'>
+                <origin xyz="0 0 0" rpy="0 0 0"/>
+                <geometry>
+                    <cylinder radius="0.001" length="0.001"/>   <!-- shrunk from 0.032: a CPU ray sensor hits its own link collision, so the fat puck was blocking all beams -->
+                </geometry>
+            </collision>
+        </link>
+
+        <gazebo reference="${frame_prefix}_link">
+            <sensor type="ray" name="laser_sensor">
+                <visualize>true</visualize>
+                <update_rate>8</update_rate>
+                <ray>
+                    <scan>
+                        <horizontal>
+                            <samples>720</samples>
+                            <resolution>1</resolution>
+                            <min_angle>-2.09439510</min_angle> <!-- ±120° (240° forward arc). Rear 120° cut to avoid self-scanning the chassis/arm. Ref: limo_gazebo.gazebo in omaroped/workSPACELIMO. Original bad agent set this to ±180° (full 360°) which caused the robot to scan its own body. -->
+                            <max_angle>2.09439510</max_angle>
+                        </horizontal>
+                    </scan>
+                    <range>
+                        <min>0.10</min>   <!-- 10cm minimum — filters chassis self-hits (6-7cm at ±108-120°); T-mini Pro real min is ~0.1m -->
+                        <max>12.0</max>   <!-- EAI T-mini Pro: max 12 m -->
+                        <resolution>0.01</resolution>
+                    </range>
+                    <!-- um bessere Realität zu simulieren, wird Rauschen auch addiert -->
+                    <noise>
+                        <type>gaussian</type>
+                        <mean>0.0</mean>
+                        <stddev>0.01</stddev>
+                    </noise>
+                </ray>
+                <plugin name="gazebo_ros_laser_sensor" filename="libgazebo_ros_ray_sensor.so">
+                    <ros>
+                        <namespace>/</namespace>
+                        <remapping>~/out:=scan</remapping>
+                    </ros>
+                    <output_type>sensor_msgs/LaserScan</output_type>
+                    <frame_name>${frame_prefix}_link</frame_name>
+                </plugin>
+            </sensor>
+        </gazebo>
+    </xacro:macro>
+
+    <!-- ******************************* Makrofunktion für Depth-Camera ***************************** -->
+    <xacro:macro name="gazebo_depth_camera" params="frame_prefix">
+        <link name='${frame_prefix}_link'>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <inertial>
+                <mass value="0.1"/>
+                <origin xyz="0.0 0 0" rpy="0 0 0"/>
+                <inertia
+                        ixx="1e-6" ixy="0" ixz="0"
+                        iyy="1e-6" iyz="0"
+                        izz="1e-6"
+                />
+            </inertial>
+            <visual name='depth_camera_visual'>
+                <origin xyz="0 0 0" rpy="0 0 0"/>
+                <geometry>
+                    <box size="0.02 0.06 0.015"/>
+                </geometry>
+                <material name='depth_camera_material'>
+                    <color rgba="0.75 0.75 0.75 1" />
+                    <ambient>0.1 0.1 0.1 1</ambient>
+                    <diffuse>0.1 0.1 0.2 1</diffuse>
+                    <specular>0 0 0 0</specular>
+                    <emissive>0 0 0 1</emissive>
+                </material>
+            </visual>
+            <collision name='depth_camera_collision'>
+                <origin xyz="0 0 0" rpy="0 0 0"/>
+                <geometry>
+                    <box size="0.02 0.06 0.015"/>
+                </geometry>
+            </collision>
+        </link>
+
+        <link name="depth_link" />
+
+        <joint name="${frame_prefix}_to_camera_joint" type="fixed">
+            <origin xyz="0 0 0" rpy="-1.570796 0 -1.570796 "/>
+            <parent link="${frame_prefix}_link"/>
+            <child link="depth_link"/>
+        </joint>
+
+        <gazebo reference="${frame_prefix}_link">
+            <sensor name="sensor_camera" type="depth">
+                <pose>0.0 0.0 0.0 0.0 0.0 0.0</pose>
+                <always_on>true</always_on>
+                <visualize>false</visualize>   <!-- hides the white camera frustum in Gazebo; camera still works/publishes. Set true to show it again -->
+                <update_rate>10.0</update_rate>
+                <camera name="head">
+                    <horizontal_fov>1.18508</horizontal_fov> <!-- 67.9deg = Orbbec DaBai depth H-FOV (was set to 80deg, mislabeled "60") -->
+                    <!-- normalisieren die Form für Fotos -->
+                    <image>
+                        <width>640</width>
+                        <height>400</height>   <!-- Orbbec DaBai depth: 640x400 (was 480) -->
+                        <format>R8G8B8</format>
+                    </image>
+                    <clip>
+                        <!-- Default camera settings (near clip = 0.15m) matching hardware configuration -->
+                        <near>0.15</near>
+                        <far>3.0</far>   <!-- Orbbec DaBai depth max 3.0 m (was 8.0) -->
+                    </clip>
+                </camera>
+                <plugin name="gazebo_ros_depth_camera_sensor" filename="libgazebo_ros_camera.so">
+                    <ros>
+<!--                         <namespace>${frame_prefix}</namespace>-->
+                        <remapping>${frame_prefix}/image_raw:=rgb/image_raw</remapping>
+                        <remapping>${frame_prefix}/image_depth:=depth/image_raw</remapping>
+                        <remapping>${frame_prefix}/camera_info:=rgb/camera_info</remapping>
+                        <remapping>${frame_prefix}/camera_info_depth:=depth/camera_info</remapping>
+                        <remapping>${frame_prefix}/points:=depth/points</remapping>
+                    </ros>
+                    <camera_name>${frame_prefix}</camera_name>
+                    <!-- Stamp images with depth_link, the actual optical frame that
+                         exists in the TF tree (its joint applies the REP-103 optical
+                         rotation). The old "${frame_prefix}_frame_optical" name was not
+                         a real frame, so box_pose_estimator's TF lookup failed. -->
+                    <frame_name>depth_link</frame_name>
+                    <hack_baseline>0.07</hack_baseline>
+                    <min_depth>0.001</min_depth>
+                    <max_depth>300.0</max_depth>
+                </plugin>
+            </sensor>
+        </gazebo>
+    </xacro:macro>
+
+    <!-- ******************************* Makrofunktion für IMU ***************************** -->
+    <xacro:macro name="gazebo_imu" params="frame_prefix">
+        <link name='${frame_prefix}_link'>
+            <pose>0 0 0 0 0 0</pose>
+            <inertial>
+                <mass value="0.01"/>
+                <origin xyz="0.0 0 0" rpy="0 0 0"/>
+                <inertia
+                        ixx="1e-7" ixy="0" ixz="0"
+                        iyy="1e-7" iyz="0"
+                        izz="1e-7"
+                />
+            </inertial>
+            <visual name='imu_visual'>
+                <origin xyz="0 0 0" rpy="0 0 0"/>
+                <geometry>
+                    <box size="0.001 0.001 0.001"/>
+                </geometry>
+                <material name='imu_material'>
+                    <color rgba="0.75 0.75 0.75 1" />
+                    <ambient>0.1 0.1 0.1 1</ambient>
+                    <diffuse>0.1 0.1 0.2 1</diffuse>
+                    <specular>0 0 0 0</specular>
+                    <emissive>0 0 0 1</emissive>
+                </material>
+            </visual>
+            <collision name='imu_collision'>
+                <origin xyz="0 0 0" rpy="0 0 0"/>
+                <geometry>
+                    <box size="0.001 0.001 0.001"/>
+                </geometry>
+            </collision>
+        </link>
+
+        <gazebo reference="${frame_prefix}_link">
+            <gravity>true</gravity>
+            <sensor name="imu_sensor" type="imu">
+                <always_on>true</always_on>
+                <update_rate>100</update_rate>
+                <visualize>true</visualize>
+                <topic>__default_topic__</topic>
+                <pose>0 0 0 0 0 0</pose>
+
+                <plugin filename="libgazebo_ros_imu_sensor.so" name="imu_plugin">
+                    <topicName>/limo/imu</topicName>
+                    <bodyName>${frame_prefix}_link</bodyName>
+                    <updateRateHZ>100.0</updateRateHZ>
+                    <gaussianNoise>0.001</gaussianNoise>
+                    <xyzOffset>0 0 0</xyzOffset>
+                    <rpyOffset>0 0 0</rpyOffset>
+                    <frameName>${frame_prefix}_link</frameName>
+                </plugin>
+            </sensor>
+        </gazebo>
+    </xacro:macro>
+</robot>

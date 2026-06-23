@@ -1,0 +1,310 @@
+<?xml version="1.0"?>
+<!--Auto: Zhui Li-->
+<!--E-Mail: lz554113510@gmail.com -->
+<!--Company: Institut fuer Intermodale Transport und Logistiksysteme in Technische Universitaet Braunschweig -->
+<!-- Description: Diese xacro-Datei basiert auf Regeln und definiert Funktionen durch xacro,
+um die Erstellung der Struktur des Wagens in Ackerman-Type zu ermoeglichen. Es liegen die Karosserie des kleinen Wagens,
+die Raedern und Steuerscharnier im vorderen Achse, und auch die hinten Raedern. -->
+
+<robot name="limo_ackermann" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+    <xacro:arg name="drive_mode" default="diff"/>
+    <xacro:property name="drive_mode" value="$(arg drive_mode)"/>
+
+    <!-- ******************************** Paramenten zu definieren ************************************* -->
+    <!-- *********************************************************************************************** -->
+    <!-- definiert Value -->
+    <xacro:property name="M_PI" value="3.14159"/>
+
+    <!-- das Value sind all gemessen -->
+    <xacro:property name="base_mass" value="4.34"/>
+    <xacro:property name="base_x_size" value="0.19" />
+    <xacro:property name="base_y_size" value="0.31" />
+    <xacro:property name="base_z_size" value="0.12" />
+
+    <xacro:property name="wheelbase" value="0.20"/>   <!-- LIMO PRO manual: wheel base 200mm -->
+    <xacro:property name="track" value="0.175"/>      <!-- LIMO PRO manual: tread 175mm -->
+    <xacro:property name="wheel_vertical_offset" value="-0.10" />
+
+    <xacro:property name="wheel_mass" value="0.5" />
+    <xacro:property name="wheel_length" value="0.045" />
+    <xacro:property name="wheel_radius" value="0.045" />
+
+    <!-- definieren die Macro-Function für die Rechnungen der Matrizen für Trägheitsmoment-->
+    <!-- Zylinder -->
+    <xacro:macro name="cylinder_inertial_matrix" params="m r h">
+        <inertial>
+            <origin xyz="0.0 0.0 0.0" />
+            <mass value="${m}" />
+            <inertia ixx="${m*(3*r*r+h*h)/12}" ixy = "0" ixz = "0"
+                     iyy="${m*(3*r*r+h*h)/12}" iyz = "0"
+                     izz="${m*r*r/2}" />
+        </inertial>
+    </xacro:macro>
+    <!-- Quader -->
+    <xacro:macro name="box_inertial_matrix" params="m w l h">
+        <inertial>
+            <origin xyz="0.0 0.0 0.0" />
+            <mass value="${m}" />
+            <inertia ixx="${m*(w*w+h*h)/12}" ixy = "0" ixz = "0"
+                     iyy="${m*(h*h+l*l)/12}" iyz = "0"
+                     izz="${m*(w*w+l*l)/12}" />
+        </inertial>
+    </xacro:macro>
+    <!-- *********************************************************************************************** -->
+    <!-- *********************************************************************************************** -->
+
+
+    <!-- **************************** Makrofunktion zu definieren ************************************** -->
+    <!-- *********************************************************************************************** -->
+    <!-- Makrofunktion für vorderen Räder mit Steuerscharnier-->
+    <!-- front left -->
+    <xacro:macro name="limo_left_steering_hinge" params="parent_prefix wheel_prefix *joint_pose">
+        <link name="${wheel_prefix}_steer_link">
+            <inertial>
+                <!-- diese Daten kommen aus den Herstellern -->
+                <mass value="0.25" />
+                <inertia ixx="0.00525" ixy="0" ixz="0" iyy="0.00035" iyz="0" izz="0.00525" />
+                <origin xyz="0 0 0" />
+            </inertial>
+            <visual>
+                <origin xyz="0 0 0" rpy="0 0 0" />
+                <geometry>
+                    <!-- es ist sehr klein, einfach als Klein definiert wird -->
+                    <cylinder length="0.0001" radius="0.0001" />
+                </geometry>
+            </visual>
+            <collision>
+                <origin xyz="0 ${wheel_length/2} 0" rpy="${M_PI/2} 0 0" />
+                <geometry>
+                    <cylinder length="${wheel_length}" radius="${wheel_radius-0.01}" />
+                </geometry>
+            </collision>
+        </link>
+
+        <!-- diff drive: front-left wheel is a fixed mount (no steering) -->
+        <joint name="${wheel_prefix}_steer_joint" type="fixed">
+            <parent link="${parent_prefix}"/>
+            <child link="${wheel_prefix}_steer_link"/>
+            <xacro:insert_block name="joint_pose"/>
+        </joint>
+
+        <link name="${wheel_prefix}_wheel_link">
+            <visual>
+                <origin xyz="0 0 0" rpy="0 0 0" />
+                <geometry>
+                    <mesh filename="package://limo_car/meshes/limo_wheel.dae" scale="1.2 1.2 1.2"/>
+                </geometry>
+            </visual>
+            <collision>
+                <origin xyz="0 ${wheel_length/2} 0" rpy="${M_PI/2} 0 0" />
+                <geometry>
+                    <cylinder length="${wheel_length}" radius="${wheel_radius}" />
+                </geometry>
+            </collision>
+            <xacro:cylinder_inertial_matrix  m="${wheel_mass}" r="${wheel_radius}"  h="${wheel_length}" />
+        </link>
+
+        <!-- planar_move drive: wheel is COSMETIC → FIXED. The base is moved holonomically
+             by libgazebo_ros_planar_move (forward+strafe+rotate all work); the wheels don't
+             drive. Fixed (not free) avoids the rear-wheel-lift seen with free wheels under a
+             kinematically-driven base. -->
+        <joint name="${wheel_prefix}_wheel_joint" type="fixed">
+            <parent link="${wheel_prefix}_steer_link"/>
+            <child link="${wheel_prefix}_wheel_link"/>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+        </joint>
+    </xacro:macro>
+
+    <!-- front right -->
+    <xacro:macro name="limo_right_steering_hinge" params="parent_prefix wheel_prefix *joint_pose">
+        <link name="${wheel_prefix}_steer_link">
+            <inertial>
+                <mass value="0.25" />
+                <inertia ixx="0.00525" ixy="0" ixz="0" iyy="0.00035" iyz="0" izz="0.00525" />
+                <origin xyz="0 0 0" />
+            </inertial>
+            <visual>
+                <origin xyz="0 0 0" rpy="0 0 0" />
+                <geometry>
+                    <cylinder length="0.0001" radius="0.0001" />
+                </geometry>
+            </visual>
+            <collision>
+                <origin xyz="0 ${wheel_length/2} 0" rpy="${M_PI/2} 0 0" />
+                <geometry>
+                    <cylinder length="${wheel_length}" radius="${wheel_radius-0.01}" />
+                </geometry>
+            </collision>
+        </link>
+
+        <!-- diff drive: front-right wheel is a fixed mount (no steering) -->
+        <joint name="${wheel_prefix}_steer_joint" type="fixed">
+            <parent link="${parent_prefix}"/>
+            <child link="${wheel_prefix}_steer_link"/>
+            <xacro:insert_block name="joint_pose"/>
+        </joint>
+
+        <link name="${wheel_prefix}_wheel_link">
+            <visual>
+                <origin xyz="0 0 0" rpy="0 0 0" />
+                <geometry>
+                    <mesh filename="package://limo_car/meshes/limo_wheel.dae" scale="1.2 1.2 1.2" />
+                </geometry>
+            </visual>
+            <collision>
+                <origin xyz="0 ${wheel_length/2} 0" rpy="${M_PI/2} 0 0" />
+                <geometry>
+                    <cylinder length="${wheel_length}" radius="${wheel_radius}" />
+                </geometry>
+            </collision>
+            <xacro:cylinder_inertial_matrix  m="${wheel_mass}" r="${wheel_radius}"  h="${wheel_length}" />
+        </link>
+
+        <!-- planar_move drive: wheel is COSMETIC → FIXED (see front-left note). -->
+        <joint name="${wheel_prefix}_wheel_joint" type="fixed">
+            <parent link="${wheel_prefix}_steer_link"/>
+            <child link="${wheel_prefix}_wheel_link"/>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+        </joint>
+    </xacro:macro>
+    <!-- *********************************************************************************************** -->
+    <!-- *********************************************************************************************** -->
+
+
+
+    <!-- ***************************************** Base zu bauen *************************************** -->
+    <!-- *********************************************************************************************** -->
+    <!-- erstellt Hauptanteil des Modells, definiert ein Nullpunkt, um Modell aufzubauen. Es ist einfach für weitere
+    Darstellungspostion in Simulation-Umgebung -->
+    <xacro:macro name="limo_ackermann">
+        <link name="base_footprint"/>
+
+        <joint name="base_joint" type="fixed">
+            <parent link="base_footprint"/>
+            <child link="base_link"/>
+            <origin xyz="0.0 0.0 0.15" rpy="0 0 0"/>
+        </joint>
+
+        <!-- herstellt base_link -->
+        <link name="base_link">
+            <visual>
+                <origin xyz="0 0 -0.15" rpy="0 0 ${M_PI/2}" />
+                <geometry>
+                    <!-- Modell von Hersteller, aber es ist kleiner als realen Produkt, da die Skale vergrößert wird -->
+                    <mesh filename="package://limo_car/meshes/limo_base.stl" scale="0.0012 0.0012 0.0012" />
+                </geometry>
+            </visual>
+
+            <!-- Modell für physikalische Kollision zu modellieren. -->
+            <collision>
+                <origin xyz="-0.06 0 -0.15" rpy="0 0 ${M_PI/2}" />
+                <geometry>
+                    <mesh filename="package://limo_car/meshes/limo_base_collision_meters.stl" scale="1.0 1.0 1.0"/>
+                </geometry>
+            </collision>
+            <xacro:box_inertial_matrix  m="${base_mass}" w="${base_x_size}" l="${base_y_size}" h="${base_z_size}" />
+        </link>
+
+        <gazebo reference="base_link">
+            <material>
+                <color rgba="0 0 0 0.5"/>
+            </material>
+        </gazebo>
+
+        <!-- hinten Räder -->
+        <link name="rear_left_wheel_link">
+            <visual>
+                <origin xyz="0 0 0" rpy="0 0 0" />
+                <geometry>
+                    <mesh filename="package://limo_car/meshes/limo_wheel.dae" scale="1.2 1.2 1.2"/>
+                </geometry>
+            </visual>
+            <collision>
+                <origin xyz="0 ${wheel_length/2} 0" rpy="${M_PI/2} 0 0" />
+                <geometry>
+                    <cylinder length="${wheel_length}" radius="${wheel_radius}" />
+                </geometry>
+            </collision>
+            <xacro:cylinder_inertial_matrix  m="${wheel_mass}" r="${wheel_radius}" h="${wheel_length}"/>
+        </link>
+
+        <!-- planar_move drive: wheel is COSMETIC → FIXED (see front-left note). -->
+        <joint name="rear_left_wheel_joint" type="fixed">
+            <parent link="base_link"/>
+            <child link="rear_left_wheel_link"/>
+            <origin xyz="${-wheelbase/2} ${track/2} ${wheel_vertical_offset}" rpy="0 0 0" />
+        </joint>
+
+        <link name="rear_right_wheel_link">
+            <visual>
+                <origin xyz="0 0 0" rpy="0 0 0" />
+                <geometry>
+                    <mesh filename="package://limo_car/meshes/limo_wheel.dae" scale="1.2 1.2 1.2"/>
+                </geometry>
+            </visual>
+            <collision>
+                <origin xyz="0 ${wheel_length/2} 0" rpy="${M_PI/2} 0 0" />
+                <geometry>
+                    <cylinder length="${wheel_length}" radius="${wheel_radius}" />
+                </geometry>
+            </collision>
+            <xacro:cylinder_inertial_matrix  m="${wheel_mass}" r="${wheel_radius}" h="${wheel_length}"/>
+        </link>
+
+        <!-- planar_move drive: wheel is COSMETIC → FIXED (see front-left note). -->
+        <joint name="rear_right_wheel_joint" type="fixed">
+            <parent link="base_link"/>
+            <child link="rear_right_wheel_link"/>
+            <origin xyz="${-wheelbase/2} ${-track/2} ${wheel_vertical_offset}" rpy="${M_PI} 0 0" />
+        </joint>
+
+        <!-- ruft Steuerscharnier mit vorderem Räder auf -->
+        <xacro:limo_left_steering_hinge parent_prefix="base_link" wheel_prefix="front_left">
+            <origin xyz="${wheelbase/2} ${track/2} ${wheel_vertical_offset}" rpy="0 0 0" />
+        </xacro:limo_left_steering_hinge>
+
+        <xacro:limo_right_steering_hinge parent_prefix="base_link" wheel_prefix="front_right">
+            <origin xyz="${wheelbase/2} ${-track/2} ${wheel_vertical_offset}" rpy="${M_PI} 0 0" />
+        </xacro:limo_right_steering_hinge>
+
+        <!-- ********************************** Kontrolle zu erstellen ************************************* -->
+        <!-- *********************************************************************************************** -->
+        <!-- ── Holonomic (Mecanum) drive — planar_move ───────────────────────────────
+             The base is moved holonomically by libgazebo_ros_planar_move: it consumes cmd_vel
+             (linear.x=forward, linear.y=STRAFE, angular.z=rotate — ALL THREE work) and
+             publishes odom + the odom->base_footprint TF. The wheels are cosmetic (fixed).
+
+             WHY this and not driven wheels: friction-emulated mecanum (driven wheels + roller
+             friction) was measured to translate + strafe but could NOT produce rotation in any
+             friction config — unusable for navigation. planar_move gives reliable
+             omnidirectional motion.
+
+             SIM-TO-REAL CAVEAT (thesis-relevant): planar_move is KINEMATIC — it sets body
+             velocity directly, so the base ignores vertical gravity (won't fall if lifted) and
+             has no real wheel-ground traction/slip. Accepted tradeoff for working omni motion
+             in Gazebo Classic. Spawn z=0 rests wheels on ground; fixed wheels avoid rear-lift. -->
+        <gazebo>
+            <plugin name="planar_move_drive" filename="libgazebo_ros_planar_move.so">
+                <update_rate>100</update_rate>
+                <publish_rate>50</publish_rate>
+                <command_topic>cmd_vel</command_topic>
+                <odometry_topic>odom</odometry_topic>
+                <odometry_frame>odom</odometry_frame>
+                <robot_base_frame>base_footprint</robot_base_frame>
+                <covariance_x>0.0001</covariance_x>
+                <covariance_y>0.0001</covariance_y>
+                <covariance_yaw>0.01</covariance_yaw>
+            </plugin>
+        </gazebo>
+
+        <!-- Wheels are FRICTIONLESS (mu=0). planar_move moves the body kinematically, so the
+             cosmetic wheels must NOT grip the ground — default friction (mu≈1) makes them act
+             like 4 planted feet that RESIST the plugin (rotation gets blocked, linear under-
+             applied). mu=0 lets the body move/turn freely. (Same as the Nexus mecanum sim.) -->
+        <gazebo reference="front_left_wheel_link">  <mu1>0.0</mu1> <mu2>0.0</mu2> </gazebo>
+        <gazebo reference="front_right_wheel_link"> <mu1>0.0</mu1> <mu2>0.0</mu2> </gazebo>
+        <gazebo reference="rear_left_wheel_link">   <mu1>0.0</mu1> <mu2>0.0</mu2> </gazebo>
+        <gazebo reference="rear_right_wheel_link">  <mu1>0.0</mu1> <mu2>0.0</mu2> </gazebo>
+    </xacro:macro>
+</robot>

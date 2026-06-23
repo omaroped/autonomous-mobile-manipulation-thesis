@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<!-- Thin static pedestal for the ISOLATED arm grasp test (arm_grasp_test.launch.py).
+     0.06 x 0.06 x 0.12; spawned at z=0.06 so its top is at z=0.12. A narrow
+     footprint so the parked base does not collide with it. Not part of the real
+     map — only used by the grasp test. -->
+<sdf version="1.6">
+  <model name="grasp_test_pedestal">
+    <static>1</static>
+    <link name="link">
+      <collision name="col">
+        <geometry><box><size>0.06 0.06 0.20</size></box></geometry>
+      </collision>
+      <visual name="vis">
+        <geometry><box><size>0.06 0.06 0.20</size></box></geometry>
+        <material>
+          <ambient>0.4 0.3 0.2 1</ambient>
+          <diffuse>0.4 0.3 0.2 1</diffuse>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>

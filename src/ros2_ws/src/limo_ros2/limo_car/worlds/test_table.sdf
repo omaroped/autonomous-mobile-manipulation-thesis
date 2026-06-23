@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<!-- Thin static table for the isolated grasp test. Top at z=0.20, placed at the
+     arm's reachable top-down zone (base_link x~0.21). Narrow (0.06 m) in the
+     approach/y direction so it clears the robot's front. Not part of the real map. -->
+<sdf version="1.6">
+  <model name="grasp_test_table">
+    <static>1</static>
+    <link name="link">
+      <collision name="col">
+        <geometry><box><size>0.20 0.06 0.20</size></box></geometry>
+        <!-- SOFT, velocity-capped contact: stops the rigid-contact "explosion" when the
+             stiff gripper fingers touch the table. max_vel caps the corrective impulse;
+             min_depth allows 1 mm penetration before reacting; low kp / high kd absorb energy. -->
+        <surface>
+          <friction><ode><mu>1.0</mu><mu2>1.0</mu2></ode></friction>
+          <contact>
+            <ode>
+              <kp>1e5</kp>
+              <kd>50</kd>
+              <max_vel>0.01</max_vel>
+              <min_depth>0.001</min_depth>
+            </ode>
+          </contact>
+        </surface>
+      </collision>
+      <visual name="vis">
+        <geometry><box><size>0.20 0.06 0.20</size></box></geometry>
+        <material>
+          <ambient>0.6 0.4 0.2 1</ambient>
+          <diffuse>0.6 0.4 0.2 1</diffuse>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>

@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<!-- Blue 3 cm cube for the grasp test. DYNAMIC (no <static>) so the weld
+     (grasp_attacher via /set_entity_state) can carry it with the gripper. 30 mm sits in the
+     MIDDLE of the real myCobot Adaptive Gripper's 20-45 mm clamp (a 20 mm box was at the hard
+     minimum, hence hard to centre), and being taller the fingers grab its upper part and clear
+     the table. Not part of the real map. -->
+<sdf version="1.6">
+  <model name="grasp_test_box">
+    <link name="link">
+      <inertial>
+        <mass>0.04</mass>   <!-- 40 g, well under the gripper's 150 g max -->
+        <inertia>
+          <ixx>6.0e-6</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>6.0e-6</iyy><iyz>0</iyz><izz>6.0e-6</izz>
+        </inertia>
+      </inertial>
+      <collision name="col">
+        <geometry><box><size>0.03 0.03 0.03</size></box></geometry>
+        <surface>
+          <friction>
+            <ode><mu>10.0</mu><mu2>10.0</mu2></ode>
+            <torsional><coefficient>1.0</coefficient></torsional>
+          </friction>
+          <contact><ode><kp>1e5</kp><kd>50</kd><max_vel>0.01</max_vel><min_depth>0.001</min_depth></ode></contact>
+        </surface>
+      </collision>
+      <visual name="vis">
+        <geometry><box><size>0.03 0.03 0.03</size></box></geometry>
+        <material>
+          <ambient>0 0 1 1</ambient>
+          <diffuse>0 0 1 1</diffuse>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>
