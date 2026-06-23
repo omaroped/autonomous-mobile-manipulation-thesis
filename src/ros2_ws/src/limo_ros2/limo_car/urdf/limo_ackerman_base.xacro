@@ -14,8 +14,12 @@ in externen Dateien.-->
     <!-- definiert Value -->
     <xacro:property name="M_PI" value="3.14159"/>
 
+<<<<<<< HEAD
     <xacro:property name="base_mass" value="2.1557"/>   <!-- base box only; LIMO PRO total mass ≈ 4.2 kg (verify link sum). Do NOT inflate this to fix base drift — that is a TEST-FIXTURE concern (base_pin), not a model property. -->
 
+=======
+    <xacro:property name="base_mass" value="2.1557"/>
+>>>>>>> origin/master
     <xacro:property name="base_x_size" value="0.13" />
     <xacro:property name="base_y_size" value="0.12" />
     <xacro:property name="base_z_size" value="0.10" />
@@ -26,7 +30,11 @@ in externen Dateien.-->
 
 
     <xacro:property name="wheelbase" value="0.2"/>
+<<<<<<< HEAD
     <xacro:property name="track" value="0.175"/>   <!-- LIMO PRO tread 175 mm (was 0.14) -->
+=======
+    <xacro:property name="track" value="0.14"/>
+>>>>>>> origin/master
     <xacro:property name="wheel_vertical_offset" value="-0.100998" />
 
 
@@ -83,6 +91,7 @@ in externen Dateien.-->
         <visual>
             <origin xyz="0 0 -0.15" rpy="0 0 1.57" />
             <geometry>
+<<<<<<< HEAD
                 <mesh filename="package://limo_car/meshes/limo_base.stl" scale="0.001 0.001 0.001"/>
             </geometry>
         </visual>
@@ -90,6 +99,14 @@ in externen Dateien.-->
         <!-- Modell für physikalische Kollision zu modellieren. -->
         <collision>
             <origin xyz="0 0 -0.06" rpy="0 0 0" />
+=======
+                <mesh filename="package://limo_car/meshes/limo_base.dae" scale="1 1 1"/>
+            </geometry>
+        </visual>
+        <!-- Modell für physikalische Kollision zu modellieren. -->
+        <collision>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+>>>>>>> origin/master
             <geometry>
                 <box size="${base_x_size} ${base_y_size} ${base_z_size}"/>
             </geometry>
@@ -141,7 +158,10 @@ in externen Dateien.-->
         <child link="hinten_left_wheel_link"/>
         <origin xyz="${-wheelbase/2} ${track/2} ${wheel_vertical_offset}" rpy="0 0 0" />
         <axis xyz="0 1 0"/>
+<<<<<<< HEAD
         <dynamics damping="0.1" friction="0.05"/>
+=======
+>>>>>>> origin/master
     </joint>
 
     <link name="hinten_right_wheel_link">
@@ -170,7 +190,10 @@ in externen Dateien.-->
         <child link="hinten_right_wheel_link"/>
         <origin xyz="${-wheelbase/2} ${-track/2} ${wheel_vertical_offset}" rpy="${M_PI} 0 0" />
         <axis xyz="0 -1 0"/>
+<<<<<<< HEAD
         <dynamics damping="0.1" friction="0.05"/>
+=======
+>>>>>>> origin/master
     </joint>
 
 

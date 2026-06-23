@@ -24,6 +24,7 @@ if(BUILD_TESTING)
 endif()
 
 install(
+<<<<<<< HEAD
   DIRECTORY config launch gazebo log meshes rviz src urdf worlds scripts maps
   DESTINATION share/${PROJECT_NAME}
 )
@@ -57,4 +58,10 @@ install(PROGRAMS scripts/slam_wanderer.py
 # (mecanum_bridge.py intentionally NOT installed — it was only for the abandoned
 #  mecanum/planar_move drive; the diff-drive base needs no cmd_vel/odom bridge.)
 
+=======
+  DIRECTORY launch  gazebo log meshes rviz src urdf worlds 
+  DESTINATION share/${PROJECT_NAME}
+)
+
+>>>>>>> origin/master
 ament_package()

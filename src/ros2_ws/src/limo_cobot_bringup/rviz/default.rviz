@@ -1,0 +1,57 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Displays:
+    - Class: rviz_default_plugins/RobotModel
+      Name: RobotModel
+      Enabled: true
+      Description Topic:
+        Value: /robot_description
+      TF Prefix: ""
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Enabled: true
+      Show Axes: true
+      Show Names: true
+      Frame Timeout: 15
+    - Class: rviz_default_plugins/Image
+      Name: Camera Image (RGB)
+      Topic:
+        Reliability Policy: Best Effort
+        Value: /rgb/image_raw
+      Value: true
+    - Class: rviz_default_plugins/Image
+      Name: Camera Image (Depth)
+      Topic:
+        Reliability Policy: Best Effort
+        Value: /depth/image_raw
+      Value: true
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Line Style:
+        Value: Lines
+      Cell Size: 0.5
+      Plane Cell Count: 10
+  Global Options:
+    Fixed Frame: base_footprint
+    Frame Rate: 30
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/SetGoal
+      Topic: /goal_pose
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 1.5
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0.2
+      Name: Current View
+      Pitch: 0.5
+      Yaw: 2.35

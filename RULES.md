@@ -64,7 +64,7 @@ Every experiment gets its own log file in `experiments/` using the template.
 
 ## 3. Meeting Notes
 
-After every meeting with the professor, write up notes in `docs/meetings/` using the template.
+After every meeting with the professor, write up notes in `docs/planning/meetings/` using the template.
 
 **Naming convention:** `YYYY-MM-DD_meeting.md`
 
@@ -77,19 +77,19 @@ After every meeting with the professor, write up notes in `docs/meetings/` using
 
 ## 4. Thesis Writing
 
-- Write in LaTeX in `docs/thesis/`.
-- One file per chapter in `docs/thesis/chapters/`.
-- Figures go into `docs/thesis/figures/` with descriptive filenames, not `fig1.png`.
-- Bibliography entries go into `bibliography.bib` immediately when a paper is read, not later.
+- Write in LaTeX in `docs/thesis/latex/`.
+- One file per chapter in `docs/thesis/latex/chapters/`.
+- Figures go into `docs/thesis/latex/figures/` with descriptive filenames, not `fig1.png`.
+- Bibliography entries go into `docs/thesis/latex/bibliography.bib` immediately when a paper is read, not later.
 - Commit writing progress at least once per working session.
 
 ---
 
 ## 5. References
 
-- Every paper that gets read gets an entry in `references/reading_list.md`.
-- PDFs are stored locally in `references/papers/` but git-ignored (copyright).
-- Datasheets go in `references/datasheets/`.
+- Every paper that gets read gets an entry in `docs/resources/literature/reading_list.md`.
+- PDFs are stored locally in `docs/resources/literature/papers/` but git-ignored (copyright).
+- Datasheets go in `docs/resources/literature/datasheets/`.
 
 ---
 

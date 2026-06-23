@@ -1,0 +1,66 @@
+bridge_node:
+  ros__parameters:
+
+    # ── Spawn / world geometry ──────────────────────────────────────────────
+    # Robot spawns at x ≈ -8.95 in the simple_warehouse world (absolute odom).
+    spawn_x: -8.95
+    spawn_y:  0.0
+    spawn_yaw: 0.0
+
+    # ── Pick zone ───────────────────────────────────────────────────────────
+    pick_zone_x:   0.60
+    pick_zone_y:   0.0
+    pick_zone_yaw: 0.0
+
+    # ── Place zone ──────────────────────────────────────────────────────────
+    place_zone_x:  -1.0
+    place_zone_y:   0.5
+    place_zone_yaw: 0.0
+
+    # ── Navigation speeds ────────────────────────────────────────────────────
+    # cruise_speed: used for the long traverse between spawn and pick/place zones.
+    #   0.30 m/s → 9.55 m / 0.30 = 31.8 s transit time (vs 79.6 s at 0.12 m/s)
+    #   LIMO hardware limit is ~0.5 m/s; 0.30 is safe for indoor warehouse sim.
+    cruise_speed: 0.30
+
+    # approach_speed: used for the final ~0.5 m of homing onto the pick/place
+    #   pose, and for any low-speed correction moves. Keep at 0.12 m/s.
+    approach_speed: 0.12
+
+    # ── Navigation timeouts ──────────────────────────────────────────────────
+    # nav_to_pick_timeout:
+    #   distance  = 0.60 - (-8.95) = 9.55 m
+    #   at cruise  9.55 / 0.30     = 31.8 s  (transit)
+    #   approach   0.50 / 0.12     =  4.2 s
+    #   nav margins (ramp, replan) = 25.0 s
+    #   ─────────────────────────────────
+    #   minimum required            ≈ 61 s  → use 90 s (1.5× safety)
+    nav_to_pick_timeout: 90.0
+
+    # nav_to_place_timeout:
+    #   place zone is at x = -1.0; pick zone arrival is at x = 0.60.
+    #   distance  = 0.60 - (-1.0) = 1.60 m
+    #   at cruise  1.60 / 0.30    =  5.3 s
+    #   margins                   = 25.0 s
+    #   minimum required          ≈ 30 s  → use 60 s (2× safety for replanning)
+    nav_to_place_timeout: 60.0
+
+    # nav_to_home_timeout (return to spawn after place):
+    #   distance  = |-8.95 - (-1.0)| = 7.95 m
+    #   at cruise  7.95 / 0.30       = 26.5 s
+    #   margins                      = 25.0 s
+    #   minimum required             ≈ 52 s  → use 75 s
+    nav_to_home_timeout: 75.0
+
+    # ── Tolerances ──────────────────────────────────────────────────────────
+    nav_xy_tolerance:  0.05   # m   — how close counts as "arrived"
+    nav_yaw_tolerance: 0.087  # rad — 5 degrees
+
+    # ── Perception ──────────────────────────────────────────────────────────
+    perception_timeout: 10.0
+    target_shape: box
+    target_dimensions: [0.03, 0.03, 0.03]
+
+    # ── MTC / arm ───────────────────────────────────────────────────────────
+    mtc_planning_timeout: 30.0
+    mtc_execution_timeout: 60.0

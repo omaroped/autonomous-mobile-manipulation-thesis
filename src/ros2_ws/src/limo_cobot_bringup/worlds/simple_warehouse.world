@@ -1,0 +1,139 @@
+<?xml version="1.0" ?>
+<!--
+  Simple warehouse world for LIMO Cobot pick-and-place experiments.
+  Contains a ground plane, a table, and basic lighting.
+  
+  Author: Omar (Thesis)
+-->
+<sdf version="1.6">
+  <world name="simple_warehouse">
+
+    <plugin name="gazebo_ros_state" filename="libgazebo_ros_state.so">
+      <ros>
+        <namespace>/gazebo</namespace>
+      </ros>
+    </plugin>
+
+    <!-- Physics -->
+    <physics type="ode">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+      <real_time_update_rate>1000</real_time_update_rate>
+    </physics>
+
+    <!-- Lighting -->
+    <include>
+      <uri>model://sun</uri>
+    </include>
+
+    <!-- Ground plane -->
+    <include>
+      <uri>model://ground_plane</uri>
+    </include>
+
+
+
+    <!-- Small box (pick-and-place target) -->
+    <model name="pick_box">
+      <pose>0.78 -0.22 0.015 0 0 0</pose>
+      <link name="box_link">
+        <inertial>
+          <mass>0.05</mass>
+          <inertia>
+            <ixx>0.0000083</ixx><ixy>0</ixy><ixz>0</ixz>
+            <iyy>0.0000083</iyy><iyz>0</iyz>
+            <izz>0.0000083</izz>
+          </inertia>
+        </inertial>
+        <collision name="box_collision">
+          <geometry>
+            <box><size>0.03 0.03 0.03</size></box>
+          </geometry>
+          <surface>
+            <friction>
+              <ode><mu>1.0</mu><mu2>1.0</mu2></ode>
+            </friction>
+          </surface>
+        </collision>
+        <visual name="box_visual">
+          <geometry>
+            <box><size>0.03 0.03 0.03</size></box>
+          </geometry>
+          <material>
+            <ambient>0.8 0.1 0.1 1</ambient>
+            <diffuse>0.8 0.1 0.1 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Blue box (pick-and-place target 2) -->
+    <model name="pick_box_blue">
+      <pose>0.78 -0.14 0.015 0 0 0</pose>
+      <link name="box_link">
+        <inertial>
+          <mass>0.05</mass>
+          <inertia>
+            <ixx>0.0000083</ixx><ixy>0</ixy><ixz>0</ixz>
+            <iyy>0.0000083</iyy><iyz>0</iyz>
+            <izz>0.0000083</izz>
+          </inertia>
+        </inertial>
+        <collision name="box_collision">
+          <geometry>
+            <box><size>0.03 0.03 0.03</size></box>
+          </geometry>
+          <surface>
+            <friction>
+              <ode><mu>1.0</mu><mu2>1.0</mu2></ode>
+            </friction>
+          </surface>
+        </collision>
+        <visual name="box_visual">
+          <geometry>
+            <box><size>0.03 0.03 0.03</size></box>
+          </geometry>
+          <material>
+            <ambient>0.1 0.1 0.8 1</ambient>
+            <diffuse>0.1 0.1 0.8 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Green box (pick-and-place target 3) -->
+    <model name="pick_box_green">
+      <pose>0.78 -0.30 0.015 0 0 0</pose>
+      <link name="box_link">
+        <inertial>
+          <mass>0.05</mass>
+          <inertia>
+            <ixx>0.0000083</ixx><ixy>0</ixy><ixz>0</ixz>
+            <iyy>0.0000083</iyy><iyz>0</iyz>
+            <izz>0.0000083</izz>
+          </inertia>
+        </inertial>
+        <collision name="box_collision">
+          <geometry>
+            <box><size>0.03 0.03 0.03</size></box>
+          </geometry>
+          <surface>
+            <friction>
+              <ode><mu>1.0</mu><mu2>1.0</mu2></ode>
+            </friction>
+          </surface>
+        </collision>
+        <visual name="box_visual">
+          <geometry>
+            <box><size>0.03 0.03 0.03</size></box>
+          </geometry>
+          <material>
+            <ambient>0.1 0.8 0.1 1</ambient>
+            <diffuse>0.1 0.8 0.1 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+  </world>
+</sdf>

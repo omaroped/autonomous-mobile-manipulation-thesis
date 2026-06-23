@@ -59,7 +59,10 @@
           <child link="front_left_wheel_link"/>
           <origin xyz="0 0 0" rpy="0 0  0" />
           <axis xyz="0 1 0"/>
+<<<<<<< HEAD
           <dynamics damping="0.1" friction="0.05"/>
+=======
+>>>>>>> origin/master
       </joint>
     </xacro:macro>
 

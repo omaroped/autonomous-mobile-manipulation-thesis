@@ -1,0 +1,60 @@
+mtc_node:
+  ros__parameters:
+    # MTC node parameters (for hello_mtc_with_perception/mtc_node)
+    execute: true
+    max_solutions: 25
+
+    controller_names: ["arm_controller", "mycobot_gripper_controller"]
+
+    arm_group_name: "arm"
+    gripper_group_name: "gripper"
+    gripper_frame: "gripper_tcp"
+    gripper_open_pose: "gripper_open"
+    gripper_close_pose: "gripper_closed"
+    arm_home_pose: "home"
+
+    world_frame: "base_link"
+
+    # Object parameters (overridden by perception server)
+    object_name: "target_object"
+    object_type: "box"
+    object_reference_frame: "base_link"
+    object_dimensions: [0.03, 0.03, 0.03]
+    object_pose: [0.3, 0.0, 0.02, 0.0, 0.0, 0.0]
+
+    # Grasp frame transform relative to gripper_tcp
+    grasp_frame_transform: [0.0, 0.0, -0.025]
+
+    # Place pose in world_frame
+    place_pose: [0.78, 0.22, 0.02, 0.0, 0.0, 0.0]
+
+    # Approach motion (along gripper z-axis, toward object)
+    approach_min_distance: 0.03
+    approach_max_distance: 0.10
+
+    # Lift motion (along world z-axis, up)
+    lift_min_distance: 0.05
+    lift_max_distance: 0.15
+
+    # Lower motion (along world z-axis, down)
+    lower_min_distance: 0.05
+    lower_max_distance: 0.15
+
+    # Retreat motion (along gripper z-axis, away)
+    retreat_min_distance: 0.03
+    retreat_max_distance: 0.10
+
+    # Direction vectors
+    approach_direction: [0.0, 0.0, 1.0]   # gripper forward
+    lift_direction: [0.0, 0.0, 1.0]       # world up
+    lower_direction: [0.0, 0.0, -1.0]     # world down
+    retreat_direction: [0.0, 0.0, -1.0]   # gripper backward
+
+    # Cartesian planner
+    cartesian_max_velocity_scaling: 0.5
+    cartesian_max_acceleration_scaling: 0.5
+    cartesian_step_size: 0.005
+    cartesian_jump_threshold: 0.0
+
+    # IK timeout per iteration
+    ik_timeout: 0.5
