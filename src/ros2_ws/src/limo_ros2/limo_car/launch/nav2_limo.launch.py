@@ -16,7 +16,7 @@ Uses thesis_map.yaml (pre-built SLAM map).
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, TimerAction
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node, LifecycleNode
@@ -83,17 +83,22 @@ def generate_launch_description():
     nav_nodes = ['planner_server', 'controller_server', 'smoother_server',
                  'behavior_server', 'bt_navigator', 'waypoint_follower', 'velocity_smoother']
 
-    lifecycle_amcl = Node(
+    # Delay 6 s before starting the lifecycle manager so map_server has time to
+    # fully parse the PGM and register its change_state service.  Without this
+    # the lifecycle manager's internal 5 s service-call timeout fires before
+    # map_server is ready, causing "Failed to change state for node: map_server"
+    # and aborting the entire Nav2 bringup.
+    lifecycle_amcl = TimerAction(period=6.0, actions=[Node(
         package='nav2_lifecycle_manager', executable='lifecycle_manager',
         name='lifecycle_manager_navigation', output='screen', condition=is_amcl,
         parameters=[{'use_sim_time': use_sim_time, 'autostart': True, 'bond_timeout': 0.0,
-                     'node_names': ['map_server', 'amcl'] + nav_nodes}])
+                     'node_names': ['map_server', 'amcl'] + nav_nodes}])])
 
-    lifecycle_gt = Node(
+    lifecycle_gt = TimerAction(period=6.0, actions=[Node(
         package='nav2_lifecycle_manager', executable='lifecycle_manager',
         name='lifecycle_manager_navigation', output='screen', condition=is_gt,
         parameters=[{'use_sim_time': use_sim_time, 'autostart': True, 'bond_timeout': 0.0,
-                     'node_names': ['map_server'] + nav_nodes}])
+                     'node_names': ['map_server'] + nav_nodes}])])
 
     return LaunchDescription([
         declare_use_sim, declare_drive_mode, declare_localization,

@@ -200,6 +200,47 @@ Nine bugs discovered and resolved while integrating the full autonomous pick-and
 
 ---
 
+## 2.2 Session 2026-06-24 — Gripper Physics, Weld, and Grasp Attempts
+
+This session focused on making the adaptive gripper actually hold the box. The core problem remained unsolved (see §2.2 Current Status), but the root causes were identified and multiple infrastructure issues were fixed.
+
+### 1.30 GazeboGraspFix — No Official ROS 2 Port Exists
+* **Symptom:** We needed a "smart weld" that fires automatically when the gripper contacts the box, so the box follows the gripper without Physics pressure. The original GazeboGraspFix plugin (ethz-asl) only exists for ROS 1.
+* **Root Cause:** The ROS 2 Humble port of GazeboGraspFix has never been published. There is no drop-in replacement.
+* **Fix:** Implemented a Python equivalent (`limo_car/scripts/smart_grasp.py`) using Gazebo's built-in `libgazebo_ros_bumper.so` contact sensor plugin. Both finger links (`gripper_left1`, `gripper_right1`) publish `gazebo_msgs/ContactsState` messages. `smart_grasp.py` monitors these topics and publishes `Bool` on `/grasp_attach` when contact is detected. `grasp_attacher.py` then teleports the box to follow the gripper at 25 Hz via `/set_entity_state`.
+
+### 1.31 Gripper Finger Collision Meshes Missing
+* **Symptom:** The gripper fingers had no precise collision geometry. The visual `.dae` meshes were rejected by ODE (non-watertight, open shells) and scaled 1000× too large (due to `<unit meter="0.001">` being ignored by Gazebo Classic). Fingers passed through objects.
+* **Root Cause:** Manufacturer-provided `.dae` visual meshes use millimeter units via the COLLADA `<unit>` tag. Gazebo Classic ODE ignores this tag and treats all coordinates as metres → 1000× too large. Additionally, the meshes are open shells (non-watertight), which ODE silently discards for collision.
+* **Fix:** Generated watertight convex-hull collision meshes in metres for each gripper link: `gripper_left1_col.dae`, `gripper_right1_col.dae`, `gripper_left2_col.dae`, `gripper_left3_col.dae`, `gripper_right2_col.dae`, `gripper_right3_col.dae`, `gripper_base_col.dae`. These are referenced in the URDF `<collision>` blocks and load correctly in Gazebo ODE.
+
+### 1.32 Box "Explosion" During Gripper Closing (Effort = 1000 N·m)
+* **Symptom:** When the gripper began closing around the box, the box shot sideways at extreme velocity and disappeared out of the simulation. The gripper appeared to "explode" the box.
+* **Root Cause:** All six gripper joints had `effort="1000.0"` (1000 Newton-metres). This is the torque of a car gearbox — physically absurd for a small gripper. For a 40 g box with contact stiffness `kp=1e6`, even 0.1 mm of finger-into-box penetration produces ~100 N of contact force. Both fingers pressing simultaneously from opposite sides created hundreds of Newtons of compressive force on a 40 g object. The ODE contact solver, unable to resolve the penetration, ejected the box laterally as the least-energy solution.
+* **Fix:** Reduced `effort` from `1000.0` to `8.0` N·m on all six gripper joints (`gripper_controller`, `gripper_base_to_gripper_left2`, `gripper_left3_to_gripper_left1`, `gripper_base_to_gripper_right3`, `gripper_base_to_gripper_right2`, `gripper_right3_to_gripper_right1`) in `mycobot_adaptive_gripper.urdf`. Also reduced `velocity` from `5.0` to `1.0` rad/s to reduce impact momentum. Contact damping `kd` raised from `1.0` to `100.0` on both finger pad links to absorb bounce.
+
+### 1.33 Box Sliding Off Fingers (Bilateral Contact Too Strict)
+* **Symptom:** After the explosion fix, the box no longer launched but the fingers slid along the box surface without gripping. The box drifted sideways as fingers closed.
+* **Root Cause:** Two compounding issues: (a) With effort=3 N·m (first attempt), the fingers were too weak to push the box into a centered position between them if the approach was slightly off-axis. (b) `smart_grasp.py` required BOTH fingers to simultaneously report contact before firing the weld (`MIN_HOLD=3` consecutive frames). If the approach was slightly off-center, one finger contacted the box first, pushed it sideways, and the second finger never reached it — so the weld never fired and nothing held the box.
+* **Fix:** Changed `smart_grasp.py` contact requirement from bilateral (`left AND right`) to unilateral (`left OR right`). Reduced `MIN_HOLD` from 3 to 1 frame (20 ms at 50 Hz) so the weld fires at first confirmed contact before the box can slide. Raised gripper effort to 8 N·m so fingers can push the box into a centered position. File: `limo_car/scripts/smart_grasp.py`.
+
+### 1.34 MoveIt Logs Flooded with `steering_wheel_joint` Errors (200+ per run)
+* **Symptom:** MoveIt's `CurrentStateMonitor` printed 200+ identical error lines per launch: `Could not find joint 'steering_wheel_joint' in robot model`. This made reading logs very difficult.
+* **Root Cause:** `base_joint_state_pub.py` published `steering_wheel_joint` in the `/joint_states` topic. This joint existed in the Ackermann drive URDF but was removed in the diff-drive configuration. MoveIt's `CurrentStateMonitor` calls `model.getJoint()` on every received `/joint_states` message at 30 Hz, logging an error for every unknown joint.
+* **Fix:** Removed `'steering_wheel_joint'` from the `BASE_JOINTS` list in `limo_car/scripts/base_joint_state_pub.py`.
+
+### 1.35 Weld Box Does Not Follow Gripper Rotation
+* **Symptom:** After the weld fires and the gripper moves, the box follows translations correctly but stays fixed when the gripper rotates. If the arm wrist rotates, the box remains at its original world orientation and position.
+* **Root Cause:** `grasp_attacher.py` computed the attachment offset as `self._off = box_world_pos - gripper_world_pos` at weld time — a vector in the **world** frame. On each 25 Hz tick it then placed the box at `gripper_world_pos + self._off`. When the gripper only translates, this is correct. When the gripper rotates, the world-frame offset is fixed, so the box drifts relative to the gripper instead of rotating with it.
+* **Fix:** Store the offset in the **gripper frame**: `self._off = R_gripper.T @ (box_world_pos - gripper_world_pos)`. On each tick, rotate it back: `box_world_pos = gripper_world_pos + R_gripper @ self._off`. The `quat_to_R()` helper already existed in the file. Added `gripper_world_transform()` method returning `(position, rotation_matrix)` from the TF lookup. File: `limo_car/scripts/grasp_attacher.py`.
+
+### Current Status: Automated Grasp (Pick Scenario) Not Yet Confirmed Successful
+* **Symptom:** Despite all the above fixes, the autonomous pick-and-place cycle (robot navigates to box, arm descends, gripper closes, box lifted) has not yet been confirmed working. Observed failure modes: box slides away, weld fires but box stays in place (orientation bug, now fixed in 1.35), or grasp contact sensors may not be publishing reliably.
+* **Root Cause (suspected):** The contact sensor collision name `col` defined in URDF `<collision name="col">` may not match what Gazebo Classic registers internally. Gazebo Classic scopes collision names as `model::link::collision_name`. The bumper plugin needs the exact collision name that Gazebo uses internally. If the name doesn't match, `libgazebo_ros_bumper.so` publishes empty `ContactsState` messages and `smart_grasp.py` never sees any contacts — so the weld never fires and `close_until_contact()` falls through to the full -0.20 rad close angle.
+* **Next Steps:** (1) Run the simulation and check if `gripper_left1_bumper` and `gripper_right1_bumper` topics are active: `ros2 topic hz /gripper_left1_bumper`. (2) If topics are empty, inspect the Gazebo log for the actual collision name Gazebo assigns to the finger collision elements. (3) Run **Scenario 2** (`place_scenario.py`): robot starts pre-gripped (box teleported to gripper, weld forced ON), drives to table, and places — this tests the weld mechanism independently of the grasp contact detection.
+
+---
+
 ## 3. Large Reference Logs
 
 For diagnostic history, refer to:

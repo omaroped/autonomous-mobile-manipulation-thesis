@@ -1,7 +1,6 @@
 <?xml version="1.0"?>
 <!--Auto: Zhui Li-->
 <!--E-Mail: lz554113510@gmail.com -->
-<<<<<<< HEAD
 <!--Company: Institut fuer Intermodale Transport und Logistiksysteme in Technische Universitaet Braunschweig -->
 <!-- Description: Diese xacro-Datei basiert auf Regeln und definiert Funktionen durch xacro,
 um die Erstellung der Struktur des Wagens in Ackerman-Type zu ermoeglichen. Es liegen die Karosserie des kleinen Wagens,
@@ -12,17 +11,6 @@ die Raedern und Steuerscharnier im vorderen Achse, und auch die hinten Raedern. 
     <xacro:arg name="drive_mode" default="diff"/>
     <xacro:property name="drive_mode" value="$(arg drive_mode)"/>
 
-=======
-<!--Company: Institut für Intermodale Transport- und Logistiksysteme in Technische Universität Braunschweig -->
-<!-- Description: Diese xacro-Datei basiert auf Regeln und definiert Funktionen durch xacro,
-um die Erstellung der Struktur des Wagens in Ackerman-Type zu ermöglichen. Es liegen die Karosserie des kleinen Wagens,
-die Rädern und Steuerscharnier im vorderen Achse, und auch die hinten Rädern. Das ganze System ist als eine Makrofunktion
-dargestellt. Es erhält sich noch die Funktionen über Reglung für Lenkung und Bewegung, wie die in Gazebo realisiert werden.
-Es würde einfach in andere Datei angerufen werden. -->
-
-<robot name="limo_ackermann" xmlns:xacro="http://www.ros.org/wiki/xacro">
-
->>>>>>> origin/master
     <!-- ******************************** Paramenten zu definieren ************************************* -->
     <!-- *********************************************************************************************** -->
     <!-- definiert Value -->
@@ -34,13 +22,8 @@ Es würde einfach in andere Datei angerufen werden. -->
     <xacro:property name="base_y_size" value="0.31" />
     <xacro:property name="base_z_size" value="0.12" />
 
-<<<<<<< HEAD
     <xacro:property name="wheelbase" value="0.20"/>   <!-- LIMO PRO manual: wheel base 200mm -->
     <xacro:property name="track" value="0.175"/>      <!-- LIMO PRO manual: tread 175mm -->
-=======
-    <xacro:property name="wheelbase" value="0.24"/>
-    <xacro:property name="track" value="0.168"/>
->>>>>>> origin/master
     <xacro:property name="wheel_vertical_offset" value="-0.10" />
 
     <xacro:property name="wheel_mass" value="0.5" />
@@ -99,7 +82,6 @@ Es würde einfach in andere Datei angerufen werden. -->
             </collision>
         </link>
 
-<<<<<<< HEAD
         <!-- diff drive: front-left wheel is a fixed mount (no steering) -->
         <joint name="${wheel_prefix}_steer_joint" type="fixed">
             <parent link="${parent_prefix}"/>
@@ -107,38 +89,11 @@ Es würde einfach in andere Datei angerufen werden. -->
             <xacro:insert_block name="joint_pose"/>
         </joint>
 
-=======
-        <joint name="${wheel_prefix}_steer_joint" type="revolute">
-            <parent link="${parent_prefix}"/>
-            <child link="${wheel_prefix}_steer_link"/>
-            <xacro:insert_block name="joint_pose"/>
-            <axis xyz="0 0 1" />
-            <!-- Paramenten von Herstellern -->
-            <limit lower="-0.523598767" upper="0.523598767" effort="5" velocity="0.5" />
-            <dynamics damping="1.0" friction="2.0"/>
-        </joint>
-
-        <transmission name="${wheel_prefix}_hinge_trans" type="SimpleTransmission">
-            <type>transmission_interface/SimpleTransmission</type>
-            <actuator name="${wheel_prefix}_hinge_motor">
-                <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
-                <mechanicalReduction>1</mechanicalReduction>
-            </actuator>
-            <joint name="${wheel_prefix}_steer_joint">
-                <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
-            </joint>
-        </transmission>
-
->>>>>>> origin/master
         <link name="${wheel_prefix}_wheel_link">
             <visual>
                 <origin xyz="0 0 0" rpy="0 0 0" />
                 <geometry>
-<<<<<<< HEAD
                     <mesh filename="package://limo_car/meshes/limo_wheel.dae" scale="1.2 1.2 1.2"/>
-=======
-                    <mesh filename="$(find limo_car)/meshes/limo_wheel.dae" scale="1.2 1.2 1.2"/>
->>>>>>> origin/master
                 </geometry>
             </visual>
             <collision>
@@ -150,35 +105,16 @@ Es würde einfach in andere Datei angerufen werden. -->
             <xacro:cylinder_inertial_matrix  m="${wheel_mass}" r="${wheel_radius}"  h="${wheel_length}" />
         </link>
 
-<<<<<<< HEAD
         <!-- differential drive: DRIVEN wheel. gazebo_ros_diff_drive spins this joint and the
              tyre friction grips the ground → REAL physics (gravity, traction, realistic odom).
              Left-side wheels spin about +Y. (Holonomic/mecanum version: ackermann_holonomic.xacro) -->
-=======
->>>>>>> origin/master
         <joint name="${wheel_prefix}_wheel_joint" type="continuous">
             <parent link="${wheel_prefix}_steer_link"/>
             <child link="${wheel_prefix}_wheel_link"/>
             <origin xyz="0 0 0" rpy="0 0 0" />
             <axis xyz="0 1 0"/>
-<<<<<<< HEAD
             <dynamics damping="0.1" friction="0.1"/>
         </joint>
-=======
-        </joint>
-
-        <transmission name="${wheel_prefix}_wheel_trans" type="SimpleTransmission">
-            <type>transmission_interface/SimpleTransmission</type>
-            <actuator name="${wheel_prefix}_wheel_motor">
-                <!-- Type für den Topic(Paramenten) -->
-                <hardwareInterface>hardware_interface/VelocityJointInterface</hardwareInterface>
-                <mechanicalReduction>1</mechanicalReduction>
-            </actuator>
-            <joint name="${wheel_prefix}_wheel_joint">
-                <hardwareInterface>hardware_interface/VelocityJointInterface</hardwareInterface>
-            </joint>
-        </transmission>
->>>>>>> origin/master
     </xacro:macro>
 
     <!-- front right -->
@@ -203,7 +139,6 @@ Es würde einfach in andere Datei angerufen werden. -->
             </collision>
         </link>
 
-<<<<<<< HEAD
         <!-- diff drive: front-right wheel is a fixed mount (no steering) -->
         <joint name="${wheel_prefix}_steer_joint" type="fixed">
             <parent link="${parent_prefix}"/>
@@ -211,37 +146,11 @@ Es würde einfach in andere Datei angerufen werden. -->
             <xacro:insert_block name="joint_pose"/>
         </joint>
 
-=======
-        <joint name="${wheel_prefix}_steer_joint" type="revolute">
-            <parent link="${parent_prefix}"/>
-            <child link="${wheel_prefix}_steer_link"/>
-            <xacro:insert_block name="joint_pose"/>
-            <axis xyz="0 0 -1"/>
-            <limit lower="-0.523598767" upper="0.523598767" effort="5" velocity="0.5" />
-            <dynamics damping="1.0" friction="2.0"/>
-        </joint>
-
-        <transmission name="${wheel_prefix}_hinge_trans" type="SimpleTransmission">
-            <type>transmission_interface/SimpleTransmission</type>
-            <actuator name="${wheel_prefix}_hinge_motor">
-                <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
-                <mechanicalReduction>1</mechanicalReduction>
-            </actuator>
-            <joint name="${wheel_prefix}_steer_joint">
-                <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
-            </joint>
-        </transmission>
-
->>>>>>> origin/master
         <link name="${wheel_prefix}_wheel_link">
             <visual>
                 <origin xyz="0 0 0" rpy="0 0 0" />
                 <geometry>
-<<<<<<< HEAD
                     <mesh filename="package://limo_car/meshes/limo_wheel.dae" scale="1.2 1.2 1.2" />
-=======
-                    <mesh filename="$(find limo_car)/meshes/limo_wheel.dae" scale="1.2 1.2 1.2" />
->>>>>>> origin/master
                 </geometry>
             </visual>
             <collision>
@@ -253,7 +162,6 @@ Es würde einfach in andere Datei angerufen werden. -->
             <xacro:cylinder_inertial_matrix  m="${wheel_mass}" r="${wheel_radius}"  h="${wheel_length}" />
         </link>
 
-<<<<<<< HEAD
         <!-- differential drive: DRIVEN wheel (see front-left note). Right-side spins about -Y. -->
         <joint name="${wheel_prefix}_wheel_joint" type="continuous">
             <parent link="${wheel_prefix}_steer_link"/>
@@ -262,26 +170,6 @@ Es würde einfach in andere Datei angerufen werden. -->
             <axis xyz="0 -1 0"/>
             <dynamics damping="0.1" friction="0.1"/>
         </joint>
-=======
-        <joint name="${wheel_prefix}_wheel_joint" type="continuous">
-            <parent link="${wheel_prefix}_steer_link"/>
-            <child link="${wheel_prefix}_wheel_link"/>
-            <origin xyz="0 0 0" rpy="0 0  0" />
-            <axis xyz="0 -1 0"/>
-        </joint>
-
-        <transmission name="${wheel_prefix}_wheel_trans" type="SimpleTransmission">
-            <type>transmission_interface/SimpleTransmission</type>
-            <actuator name="${wheel_prefix}_wheel_motor">
-                <!-- Type für den Topic(Paramenten) -->
-                <hardwareInterface>hardware_interface/VelocityJointInterface</hardwareInterface>
-                <mechanicalReduction>1</mechanicalReduction>
-            </actuator>
-            <joint name="${wheel_prefix}_wheel_joint">
-                <hardwareInterface>hardware_interface/VelocityJointInterface</hardwareInterface>
-            </joint>
-        </transmission>
->>>>>>> origin/master
     </xacro:macro>
     <!-- *********************************************************************************************** -->
     <!-- *********************************************************************************************** -->
@@ -293,21 +181,13 @@ Es würde einfach in andere Datei angerufen werden. -->
     <!-- erstellt Hauptanteil des Modells, definiert ein Nullpunkt, um Modell aufzubauen. Es ist einfach für weitere
     Darstellungspostion in Simulation-Umgebung -->
     <xacro:macro name="limo_ackermann">
-<<<<<<< HEAD
         <link name="base_footprint"/>
-=======
-        <!-- <link name="base_footprint"/>
->>>>>>> origin/master
 
         <joint name="base_joint" type="fixed">
             <parent link="base_footprint"/>
             <child link="base_link"/>
             <origin xyz="0.0 0.0 0.15" rpy="0 0 0"/>
-<<<<<<< HEAD
         </joint>
-=======
-        </joint> -->
->>>>>>> origin/master
 
         <!-- herstellt base_link -->
         <link name="base_link">
@@ -315,7 +195,6 @@ Es würde einfach in andere Datei angerufen werden. -->
                 <origin xyz="0 0 -0.15" rpy="0 0 ${M_PI/2}" />
                 <geometry>
                     <!-- Modell von Hersteller, aber es ist kleiner als realen Produkt, da die Skale vergrößert wird -->
-<<<<<<< HEAD
                     <mesh filename="package://limo_car/meshes/limo_base.stl" scale="0.0012 0.0012 0.0012" />
                 </geometry>
             </visual>
@@ -325,16 +204,6 @@ Es würde einfach in andere Datei angerufen werden. -->
                 <origin xyz="-0.06 0 -0.15" rpy="0 0 ${M_PI/2}" />
                 <geometry>
                     <mesh filename="package://limo_car/meshes/limo_base_collision_meters.stl" scale="1.0 1.0 1.0"/>
-=======
-                    <mesh filename="$(find limo_car)/meshes/limo_base.dae" scale="1.2 1.2 1.2" />
-                </geometry>
-            </visual>
-            <!-- Modell für physikalische Kollision zu modellieren. -->
-            <collision>
-                <origin xyz="0 0 0" rpy="0 0 0" />
-                <geometry>
-                    <box size="${base_x_size} ${base_y_size} ${base_z_size}"/>
->>>>>>> origin/master
                 </geometry>
             </collision>
             <xacro:box_inertial_matrix  m="${base_mass}" w="${base_x_size}" l="${base_y_size}" h="${base_z_size}" />
@@ -351,11 +220,7 @@ Es würde einfach in andere Datei angerufen werden. -->
             <visual>
                 <origin xyz="0 0 0" rpy="0 0 0" />
                 <geometry>
-<<<<<<< HEAD
                     <mesh filename="package://limo_car/meshes/limo_wheel.dae" scale="1.2 1.2 1.2"/>
-=======
-                    <mesh filename="$(find limo_car)/meshes/limo_wheel.dae" scale="1.2 1.2 1.2"/>
->>>>>>> origin/master
                 </geometry>
             </visual>
             <collision>
@@ -367,43 +232,20 @@ Es würde einfach in andere Datei angerufen werden. -->
             <xacro:cylinder_inertial_matrix  m="${wheel_mass}" r="${wheel_radius}" h="${wheel_length}"/>
         </link>
 
-<<<<<<< HEAD
         <!-- differential drive: DRIVEN wheel (see front-left note). -->
-=======
->>>>>>> origin/master
         <joint name="rear_left_wheel_joint" type="continuous">
             <parent link="base_link"/>
             <child link="rear_left_wheel_link"/>
             <origin xyz="${-wheelbase/2} ${track/2} ${wheel_vertical_offset}" rpy="0 0 0" />
             <axis xyz="0 1 0"/>
-<<<<<<< HEAD
             <dynamics damping="0.1" friction="0.1"/>
         </joint>
 
-=======
-        </joint>
-
-        <transmission name="rear_left_wheel_trans" type="SimpleTransmission">
-            <type>transmission_interface/SimpleTransmission</type>
-            <actuator name="rear_left_wheel_motor">
-                <hardwareInterface>hardware_interface/VelocityJointInterface</hardwareInterface>
-                <mechanicalReduction>1</mechanicalReduction>
-            </actuator>
-            <joint name="rear_left_wheel_joint">
-                <hardwareInterface>hardware_interface/VelocityJointInterface</hardwareInterface>
-            </joint>
-        </transmission>
-
->>>>>>> origin/master
         <link name="rear_right_wheel_link">
             <visual>
                 <origin xyz="0 0 0" rpy="0 0 0" />
                 <geometry>
-<<<<<<< HEAD
                     <mesh filename="package://limo_car/meshes/limo_wheel.dae" scale="1.2 1.2 1.2"/>
-=======
-                    <mesh filename="$(find limo_car)/meshes/limo_wheel.dae" scale="1.2 1.2 1.2"/>
->>>>>>> origin/master
                 </geometry>
             </visual>
             <collision>
@@ -415,34 +257,15 @@ Es würde einfach in andere Datei angerufen werden. -->
             <xacro:cylinder_inertial_matrix  m="${wheel_mass}" r="${wheel_radius}" h="${wheel_length}"/>
         </link>
 
-<<<<<<< HEAD
         <!-- differential drive: DRIVEN wheel (see front-left note). -->
-=======
->>>>>>> origin/master
         <joint name="rear_right_wheel_joint" type="continuous">
             <parent link="base_link"/>
             <child link="rear_right_wheel_link"/>
             <origin xyz="${-wheelbase/2} ${-track/2} ${wheel_vertical_offset}" rpy="${M_PI} 0 0" />
             <axis xyz="0 -1 0"/>
-<<<<<<< HEAD
             <dynamics damping="0.1" friction="0.1"/>
         </joint>
 
-=======
-        </joint>
-
-        <transmission name="rear_right_wheel_trans" type="SimpleTransmission">
-            <type>transmission_interface/SimpleTransmission</type>
-            <actuator name="rear_right_wheel_motor">
-                <hardwareInterface>hardware_interface/VelocityJointInterface</hardwareInterface>
-                <mechanicalReduction>1</mechanicalReduction>
-            </actuator>
-            <joint name="rear_right_wheel_joint">
-                <hardwareInterface>hardware_interface/VelocityJointInterface</hardwareInterface>
-            </joint>
-        </transmission>
-
->>>>>>> origin/master
         <!-- ruft Steuerscharnier mit vorderem Räder auf -->
         <xacro:limo_left_steering_hinge parent_prefix="base_link" wheel_prefix="front_left">
             <origin xyz="${wheelbase/2} ${track/2} ${wheel_vertical_offset}" rpy="0 0 0" />
@@ -454,7 +277,6 @@ Es würde einfach in andere Datei angerufen werden. -->
 
         <!-- ********************************** Kontrolle zu erstellen ************************************* -->
         <!-- *********************************************************************************************** -->
-<<<<<<< HEAD
         <!-- ── Differential drive (gazebo_ros_diff_drive) — REAL physics ──────────────
              Drives the 4 wheels as 2 pairs (left/right). cmd_vel.linear.x = forward,
              angular.z = turn (in-place spin when the sides counter-rotate). NO strafe — diff
@@ -480,31 +302,6 @@ Es würde einfach in andere Datei angerufen werden. -->
                 <wheel_separation>0.172</wheel_separation>
                 <wheel_diameter>0.09</wheel_diameter>        <!-- 2 × 0.045 m radius -->
                 <wheel_diameter>0.09</wheel_diameter>
-=======
-        <gazebo>
-            <plugin name="gazebo_ros_control" filename="libgazebo_ros_control.so" />
-            <plugin name="ackermann_controller" filename="libgazebo_ros_ackermann_drive.so">
-                <update_rate>100</update_rate>
-                <front_left_joint>front_left_wheel_joint</front_left_joint>
-                <front_right_joint>front_right_wheel_joint</front_right_joint>
-                <rear_left_joint>rear_left_wheel_joint</rear_left_joint>
-                <rear_right_joint>rear_right_wheel_joint</rear_right_joint>
-                <left_steering_joint>front_left_steer_joint</left_steering_joint>
-                <right_steering_joint>front_right_steer_joint</right_steering_joint>
-                <steering_wheel_joint>/</steering_wheel_joint> 
-
-                <left_steering_pid_gain>10000 100 10</left_steering_pid_gain>
-                <left_steering_i_rang>0 0</left_steering_i_rang>
-                <right_steering_pid_gain>10000 100 10</right_steering_pid_gain>
-                <right_steering_i_rang>0 0</right_steering_i_rang>
-                <linear_velocity_pid_gain>0.5 10 0.001</linear_velocity_pid_gain>
-                <linear_velocity_i_range>0 0</linear_velocity_i_range>
-
-                <max_steer>0.523598767</max_steer> 
-
-                <wheel_separation>0.172</wheel_separation> 
-                <wheel_diameter>0.09</wheel_diameter> 
->>>>>>> origin/master
                 <max_wheel_torque>20</max_wheel_torque>
                 <max_wheel_acceleration>1.0</max_wheel_acceleration>
                 <command_topic>cmd_vel</command_topic>

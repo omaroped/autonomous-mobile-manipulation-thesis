@@ -74,25 +74,23 @@ class GraspAttacher(Node):
         self.get_logger().info('grasp_attacher: using live TF for gripper world pos (odom = Gazebo world)')
         return True
 
-    def gripper_world_pos(self):
-        """Return the gripper TCP position in Gazebo world coordinates.
+    def gripper_world_transform(self):
+        """Return (pos, R): gripper_tcp world position and 3×3 rotation matrix.
 
-        With odometry_source=1 (WORLD), the 'odom' frame IS the Gazebo world
-        frame — so a direct TF lookup from odom to gripper_tcp gives the correct
-        world position regardless of where the robot has driven to.
-
-        The old approach (capture_base at startup + static _B_pos) was broken:
-        once the robot drove to the table, _B_pos was stale and the computed
-        gripper position was wrong, causing the box to float away.
+        Storing the attach offset in gripper frame (via R^T) and rotating it
+        back on every tick (via R) means the box follows both translations AND
+        rotations of the gripper — not just translations.
         """
         try:
             tf = self.tf_buffer.lookup_transform('odom', TCP_FRAME, rclpy.time.Time())
             t = tf.transform.translation
-            return np.array([t.x, t.y, t.z])
+            q = tf.transform.rotation
+            return (np.array([t.x, t.y, t.z]),
+                    quat_to_R(q.x, q.y, q.z, q.w))
         except Exception as e:
             self.get_logger().warn(f'TF odom→{TCP_FRAME} unavailable: {e}',
                                    throttle_duration_sec=1.0)
-            return None
+            return None, None
 
     def set_box_world(self, pos):
         if self._box_name is None:
@@ -121,24 +119,26 @@ class GraspAttacher(Node):
                         break
             
             box = self._get_world(self._box_name) if self._box_name else None
-            g = self.gripper_world_pos()
-            if box is None or g is None:
+            g_pos, R_g = self.gripper_world_transform()
+            if box is None or g_pos is None:
                 self.get_logger().warn(f'attach pending — box/gripper pose not ready yet (box name: {self._box_name})',
                                        throttle_duration_sec=1.0)
                 return
             bpos = np.array([box.position.x, box.position.y, box.position.z])
-            self._off = bpos - g
+            # store offset in gripper frame so it rotates correctly on each tick
+            self._off = R_g.T @ (bpos - g_pos)
             self._box_quat = box.orientation
             self._attached = True
-            self.get_logger().info(f'WELD ON — box follows gripper (offset {self._off.round(3)})')
+            self.get_logger().info(f'WELD ON — box follows gripper (offset {self._off.round(3)} gripper-frame)')
         elif not self._want and self._attached:
             self._attached = False
             self.get_logger().info('WELD OFF — box released')
 
         if self._attached and self._off is not None:
-            g = self.gripper_world_pos()
-            if g is not None:
-                self.set_box_world(g + self._off)
+            g_pos, R_g = self.gripper_world_transform()
+            if g_pos is not None:
+                # rotate gripper-frame offset back to world frame on every tick
+                self.set_box_world(g_pos + R_g @ self._off)
 
 
 def main():
@@ -154,7 +154,7 @@ def main():
     node.get_logger().info('grasp_attacher ready (waiting for /grasp_attach)')
     try:
         while rclpy.ok():
-            rclpy.spin_once(node, timeout_sec=0.04)
+            rclpy.spin_once(node, timeout_sec=0.02)
             node.tick()
     except KeyboardInterrupt:
         pass

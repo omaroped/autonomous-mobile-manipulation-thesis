@@ -1,16 +1,9 @@
 <?xml version="1.0"?>
 <!-- Autor: Zhui Li -->
 <!--E-Mail: lz554113510@gmail.com -->
-<<<<<<< HEAD
 <!--Company: Institut fuer Intermodale Transport und Logistiksysteme in Technische Universitaet Braunschweig -->
 <!-- Description: Diese xacro-Datei basiert auf Regeln und definiert Funktionen durch xacro,
 um die Erstellung der weitere Simulation fuer Sensoren in Gazebo ermoeglichen. -->
-=======
-<!--Company: Institut für Intermodale Transport- und Logistiksysteme in Technische Universität Braunschweig -->
-<!-- Description: Diese xacro-Datei basiert auf Regeln und definiert Funktionen durch xacro,
-um die Erstellung der weitere Simulation für Sensoren in Gazebo ermöglichen. Es erhaltet die Makrofunktion für die
-realisierbar elektrische Komponente, also Sensoren aus Gazebo-Package. Diese Anteile konnte in anderen Datei benutzt werden. -->
->>>>>>> origin/master
 
 <robot name="limo_sensor" xmlns:xacro="http://www.ros.org/wiki/xacro">
 
@@ -42,29 +35,20 @@ realisierbar elektrische Komponente, also Sensoren aus Gazebo-Package. Diese Ant
             <collision name='laser_collision'>
                 <origin xyz="0 0 0" rpy="0 0 0"/>
                 <geometry>
-<<<<<<< HEAD
                     <cylinder radius="0.001" length="0.001"/>   <!-- shrunk from 0.032: a CPU ray sensor hits its own link collision, so the fat puck was blocking all beams -->
-=======
-                    <cylinder radius="0.032" length="0.016"/>
->>>>>>> origin/master
                 </geometry>
             </collision>
         </link>
 
         <gazebo reference="${frame_prefix}_link">
             <sensor type="ray" name="laser_sensor">
-<<<<<<< HEAD
                 <visualize>true</visualize>
-=======
-                <visualize>false</visualize>
->>>>>>> origin/master
                 <update_rate>8</update_rate>
                 <ray>
                     <scan>
                         <horizontal>
                             <samples>720</samples>
                             <resolution>1</resolution>
-<<<<<<< HEAD
                             <min_angle>-2.09439510</min_angle> <!-- ±120° (240° forward arc). Rear 120° cut to avoid self-scanning the chassis/arm. Ref: limo_gazebo.gazebo in omaroped/workSPACELIMO. Original bad agent set this to ±180° (full 360°) which caused the robot to scan its own body. -->
                             <max_angle>2.09439510</max_angle>
                         </horizontal>
@@ -72,15 +56,6 @@ realisierbar elektrische Komponente, also Sensoren aus Gazebo-Package. Diese Ant
                     <range>
                         <min>0.10</min>   <!-- 10cm minimum — filters chassis self-hits (6-7cm at ±108-120°); T-mini Pro real min is ~0.1m -->
                         <max>12.0</max>   <!-- EAI T-mini Pro: max 12 m -->
-=======
-                            <min_angle>-2.09439504</min_angle> <!-- Einheit in "rad", von Hersteller -->
-                            <max_angle>2.09439504</max_angle>
-                        </horizontal>
-                    </scan>
-                    <range>
-                        <min>0.2</min>
-                        <max>8.0</max>
->>>>>>> origin/master
                         <resolution>0.01</resolution>
                     </range>
                     <!-- um bessere Realität zu simulieren, wird Rauschen auch addiert -->
@@ -96,11 +71,7 @@ realisierbar elektrische Komponente, also Sensoren aus Gazebo-Package. Diese Ant
                         <remapping>~/out:=scan</remapping>
                     </ros>
                     <output_type>sensor_msgs/LaserScan</output_type>
-<<<<<<< HEAD
                     <frame_name>${frame_prefix}_link</frame_name>
-=======
-                    <min_intensity>150.0</min_intensity>
->>>>>>> origin/master
                 </plugin>
             </sensor>
         </gazebo>
@@ -148,22 +119,10 @@ realisierbar elektrische Komponente, also Sensoren aus Gazebo-Package. Diese Ant
             <child link="depth_link"/>
         </joint>
 
-<<<<<<< HEAD
-=======
-        <link name="${frame_prefix}_frame_optical" />
-
-        <joint name="${frame_prefix}_to_optical_joint" type="fixed">
-            <origin xyz="0 0 0" rpy="-1.570796 0 -1.570796 "/>
-            <parent link="${frame_prefix}_link"/>
-            <child link="${frame_prefix}_frame_optical"/>
-        </joint>
-
->>>>>>> origin/master
         <gazebo reference="${frame_prefix}_link">
             <sensor name="sensor_camera" type="depth">
                 <pose>0.0 0.0 0.0 0.0 0.0 0.0</pose>
                 <always_on>true</always_on>
-<<<<<<< HEAD
                 <visualize>false</visualize>   <!-- hides the white camera frustum in Gazebo; camera still works/publishes. Set true to show it again -->
                 <update_rate>10.0</update_rate>
                 <camera name="head">
@@ -178,21 +137,6 @@ realisierbar elektrische Komponente, also Sensoren aus Gazebo-Package. Diese Ant
                         <!-- Default camera settings (near clip = 0.15m) matching hardware configuration -->
                         <near>0.15</near>
                         <far>3.0</far>   <!-- Orbbec DaBai depth max 3.0 m (was 8.0) -->
-=======
-                <visualize>true</visualize>
-                <update_rate>10.0</update_rate>
-                <camera name="head">
-                    <horizontal_fov>1.3962634</horizontal_fov> <!-- 60*pi/180 -->
-                    <!-- normalisieren die Form für Fotos -->
-                    <image>
-                        <width>640</width>
-                        <height>480</height>
-                        <format>R8G8B8</format>
-                    </image>
-                    <clip>
-                        <near>0.15</near>
-                        <far>8.0</far>
->>>>>>> origin/master
                     </clip>
                 </camera>
                 <plugin name="gazebo_ros_depth_camera_sensor" filename="libgazebo_ros_camera.so">
@@ -205,15 +149,11 @@ realisierbar elektrische Komponente, also Sensoren aus Gazebo-Package. Diese Ant
                         <remapping>${frame_prefix}/points:=depth/points</remapping>
                     </ros>
                     <camera_name>${frame_prefix}</camera_name>
-<<<<<<< HEAD
                     <!-- Stamp images with depth_link, the actual optical frame that
                          exists in the TF tree (its joint applies the REP-103 optical
                          rotation). The old "${frame_prefix}_frame_optical" name was not
                          a real frame, so box_pose_estimator's TF lookup failed. -->
                     <frame_name>depth_link</frame_name>
-=======
-                    <frame_name>${frame_prefix}_frame_optical</frame_name>
->>>>>>> origin/master
                     <hack_baseline>0.07</hack_baseline>
                     <min_depth>0.001</min_depth>
                     <max_depth>300.0</max_depth>

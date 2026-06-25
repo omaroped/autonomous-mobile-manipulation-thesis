@@ -21,7 +21,6 @@
   <depend>gazebo</depend>
   <depend>libgazebo_ros</depend>
   <depend>rqt_robot_steering</depend>
-<<<<<<< HEAD
   <depend>moveit_msgs</depend>
   <depend>cv_bridge</depend>
   <depend>sensor_msgs</depend>
@@ -30,8 +29,6 @@
   <depend>nav2_msgs</depend>
   <depend>gazebo_msgs</depend>
   <depend>lifecycle_msgs</depend>
-=======
->>>>>>> origin/master
   
   <export>
     <build_type>ament_cmake</build_type>

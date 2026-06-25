@@ -156,7 +156,7 @@
     </model>
     <model name="station_a_assembly">
       <static>true</static>
-      <pose>-3.5 5 0.1 0 0 0</pose>
+      <pose>-5.0 7.5 0.1 0 0 0</pose>
       <link name="link">
         <collision name="collision">
           <geometry><box><size>0.8 0.8 0.2</size></box></geometry>
@@ -224,10 +224,31 @@
       </link>
     </model>
 
+    <!-- Place table: identical dimensions to pickup_table, 4 m south.
+         Blue colour so it's visually distinct in Gazebo. -->
+    <model name='place_table'>
+      <static>1</static>
+      <pose>-4 -2 0.05 0 0 0</pose>
+      <link name='link'>
+        <collision name='col'>
+          <geometry><box><size>0.3 0.08 0.1</size></box></geometry>
+        </collision>
+        <visual name='vis'>
+          <geometry><box><size>0.3 0.08 0.1</size></box></geometry>
+          <material>
+            <ambient>0.1 0.3 0.8 1</ambient>
+            <diffuse>0.1 0.3 0.8 1</diffuse>
+          </material>
+        </visual>
+        <self_collide>0</self_collide>
+      </link>
+    </model>
+
     <!-- Blue target box: 4 cm cube on table.
          Table top z=0.10, box half=0.02 → centre z=0.12.
          DYNAMIC (static removed) so the gripper can lift it.
-         Mass 0.04 kg; cube inertia I = m·a²/6 = 0.04·(0.04)²/6 ≈ 1.07e-5.
+         Mass 0.04 kg; 0.035×0.035×0.04 box. Finger gap at grasp=31.8mm, open=43.4mm.
+         Box at 35mm fits open gap (4mm margin each side) and squeezes at grasp (3mm per side).
          Soft ODE contact prevents jitter / tunnelling on the table surface. -->
     <model name='target_box'>
       <pose>-2 4 0.12 0 0 0</pose>
@@ -235,18 +256,21 @@
         <inertial>
           <mass>0.04</mass>
           <inertia>
-            <ixx>1.07e-5</ixx><ixy>0</ixy><ixz>0</ixz>
-            <iyy>1.07e-5</iyy><iyz>0</iyz>
-            <izz>1.07e-5</izz>
+            <ixx>9.42e-6</ixx><ixy>0</ixy><ixz>0</ixz>
+            <iyy>9.42e-6</iyy><iyz>0</iyz>
+            <izz>8.17e-6</izz>
           </inertia>
         </inertial>
         <collision name='col'>
-          <geometry><box><size>0.04 0.04 0.04</size></box></geometry>
+          <geometry><box><size>0.035 0.035 0.04</size></box></geometry>
           <surface>
+            <friction>
+              <ode><mu>1.0</mu><mu2>1.0</mu2></ode>
+            </friction>
             <contact>
               <ode>
-                <kp>1e5</kp>
-                <kd>50</kd>
+                <kp>1e6</kp>
+                <kd>1.0</kd>
                 <max_vel>0.01</max_vel>
                 <min_depth>0.001</min_depth>
               </ode>
@@ -254,7 +278,7 @@
           </surface>
         </collision>
         <visual name='vis'>
-          <geometry><box><size>0.04 0.04 0.04</size></box></geometry>
+          <geometry><box><size>0.035 0.035 0.04</size></box></geometry>
           <material>
             <ambient>0 0 1 1</ambient>
             <diffuse>0 0.2 1 1</diffuse>

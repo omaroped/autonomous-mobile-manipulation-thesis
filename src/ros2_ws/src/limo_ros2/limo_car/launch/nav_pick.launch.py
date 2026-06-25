@@ -82,7 +82,7 @@ def generate_launch_description():
             launch_arguments={
                 'use_sim_time': 'true',
                 'use_rviz': use_rviz,
-                'rviz_config': os.path.join(pkg, 'rviz', 'nav_pick.rviz'),
+                'rviz_config': os.path.join(pkg, 'rviz', 'nav_monitor.rviz'),
             }.items())])
 
     # ── 3. Nav2 — delay 12 s so the robot is spawned + controllers ready ─────
@@ -116,6 +116,19 @@ def generate_launch_description():
             output='screen',
             parameters=[{'use_sim_time': True}])])
 
+    # ── 6. smart_grasp — delay 15 s (GazeboGraspFix equivalent in Python) ────
+    #    Monitors contact sensors on gripper_left1 + gripper_right1.
+    #    Auto-publishes /grasp_attach True when both fingers simultaneously
+    #    touch the target box, False when gripper opens.  Replaces manual weld.
+    smart_grasp = TimerAction(
+        period=15.0,
+        actions=[Node(
+            package='limo_car',
+            executable='smart_grasp',
+            name='smart_grasp',
+            output='screen',
+            parameters=[{'use_sim_time': True}])])
+
     # ── 7. nav_pick_orchestrator — delay 25 s (Nav2 fully active) ────────────
     orchestrator = TimerAction(
         period=25.0,
@@ -138,5 +151,6 @@ def generate_launch_description():
         nav2_launch,
         box_estimator,
         grasp_attacher,
+        smart_grasp,
         orchestrator,
     ])

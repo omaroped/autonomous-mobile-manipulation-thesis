@@ -64,7 +64,8 @@ from lifecycle_msgs.msg import Transition
 # Table at (−2, 4); approach from +Y → stop at y ≈ 4.22.
 # Fine-tune NAV_GOAL_Y if the arm can't reach on first run.
 NAV_GOAL_X   = -2.0
-NAV_GOAL_Y   =  4.60    # standoff distance, then visual docking takes over
+NAV_GOAL_Y   =  4.75    # Nav2 stops here; visual_docking() handles the final 0.5 m.
+                         # Must be > pickup_table inflated north edge (4.10+0.45=4.55) + margin.
 NAV_GOAL_YAW = -1.5708  # −π/2 → robot faces −Y (toward the table)
 
 NAV_TIMEOUT_SEC = 120.0  # generous — 3 m at 0.25 m/s = 12 s, but allow replanning
@@ -78,9 +79,15 @@ GRIPPER_OPEN  = [ 0.15,  0.15, -0.15, -0.15, -0.15,  0.15]
 GRIPPER_GRASP = [-0.20, -0.20,  0.20,  0.20,  0.20, -0.20]   # gentle partial close
 GRIPPER_TOPIC = '/mycobot_gripper_controller/commands'
 
+# Angle at which we fire the weld directly if smart_grasp hasn't triggered.
+# Estimated from box geometry: 35 mm box, finger gap at open=43.4 mm, at grasp=31.8 mm.
+# Linear interpolation: contact at θ ≈ -0.10 rad.  Fire at -0.10 so fingers are
+# just touching the box when the weld attaches — no force overshoot.
+WELD_FALLBACK_ANGLE = -0.10
+
 # Sim "weld" attaches the box rigidly to the gripper (a Gazebo grasp aid). Set False to
 # test whether the gripper physically holds the box on its own (real-grip test).
-USE_WELD = True
+USE_WELD = False  # real physics grasp — no artificial attachment
 
 # ── MoveIt frames / group ─────────────────────────────────────────────────────
 PLANNING_FRAME = 'base_link'
@@ -89,8 +96,13 @@ ARM_GROUP      = 'arm'
 ARM_JOINTS = ['joint2_to_joint1', 'joint3_to_joint2', 'joint4_to_joint3',
               'joint5_to_joint4', 'joint6_to_joint5', 'joint6output_to_joint6']
 NAMED_STATES = {
-    'home':  [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-    'ready': [0.0, -0.5, -0.6, 1.1, 0.0, 0.0],
+    'home':   [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    'ready':  [0.0, -0.5, -0.6, 1.1, 0.0, 0.0],
+    # Travel pose: joint2 tilts arm forward, joint3+4 fold it DOWN so the arm's
+    # centre of mass is low and close to the body. This minimises the pendulum
+    # torque on joint2 (horizontal-axis hinge) during navigation, stopping the
+    # vibration that occurs when the arm is straight up (home = worst case).
+    'travel': [0.0,  1.2, -0.6, -0.6, 0.0, 0.0],
 }
 
 # ── Grasp geometry (calibrated, from arm_grasp_test) ─────────────────────────
@@ -115,6 +127,16 @@ STACK_Y_DEFAULT  = -0.12               # base_link y — offset to the side of t
 STACK_SURFACE_Z  =  0.06               # base_link z of the foundation surface top (table top)
 STACK_HOVER      =  0.10               # TCP hover above the current stack top before placing
 STACK_COUNT_DEF  =  0                  # 0 = legacy single pick+backup; N>0 = stack N boxes
+
+# ── Place table (world: -2, 0, 0.05 — same corridor, 4 m south of pickup) ────
+NAV_PLACE_X    = -4.0        # place table moved to open area west of the divider
+NAV_PLACE_Y    = -1.28       # Nav2 stops here (table at y=−2, dock at y=−1.76, +0.48 m buffer)
+NAV_PLACE_YAW  = -1.5708    # same −π/2 (robot faces −Y, arm reaches toward table)
+PLACE_DOCK_M   =  0.24      # final dock distance from table centre (same as pick)
+PLACE_NAV_TO_DOCK = 0.48    # odometry drive from NAV_PLACE_Y to dock position
+PLACE_BOX_Z    =  0.08      # box centre z in base_link (same table height as pick)
+PLACE_HOVER    =  0.12      # TCP height above box centre while hovering
+PLACE_ABOVE    =  0.04      # TCP height above box centre when setting box down
 
 # ── Planning ──────────────────────────────────────────────────────────────────
 PLAN_ATTEMPTS = 10
@@ -147,6 +169,8 @@ class NavPickOrchestrator(Node):
         self._gripper      = self.create_publisher(Float64MultiArray, GRIPPER_TOPIC, 10)
         self._attach_pub   = self.create_publisher(Bool, '/grasp_attach', 10)
         self._last_gripper = [0.0] * 6
+        self._weld_active  = False
+        self.create_subscription(Bool, '/grasp_attach', self._weld_cb, 10)
 
         # Perception
         self._latest_box = None
@@ -259,7 +283,8 @@ class NavPickOrchestrator(Node):
     def _activate_nav2_cmdvel(self):
         """Re-activate the Nav2 cmd_vel nodes (in case a previous mission
         deactivated them for docking) so navigation can drive again."""
-        for node in ('controller_server', 'velocity_smoother', 'behavior_server'):
+        for node in ('controller_server', 'velocity_smoother', 'behavior_server',
+                     'collision_monitor'):
             cli = self.create_client(ChangeState, f'/{node}/change_state')
             if not cli.wait_for_service(timeout_sec=3.0):
                 continue
@@ -328,9 +353,11 @@ class NavPickOrchestrator(Node):
 
     def _silence_nav2_cmdvel(self):
         """Deactivate the Nav2 nodes that publish /cmd_vel so the orchestrator can
-        own the topic during docking. velocity_smoother in particular spams zeros
-        at 20 Hz even when idle, which throttles our docking commands to a crawl."""
-        for node in ('velocity_smoother', 'controller_server', 'behavior_server'):
+        own the topic during docking. collision_monitor publishes safety-stop zeros
+        when it receives no input on cmd_vel_smoothed (after smoother deactivates),
+        which overrides direct dock-drive commands."""
+        for node in ('collision_monitor', 'velocity_smoother', 'controller_server',
+                     'behavior_server'):
             cli = self.create_client(ChangeState, f'/{node}/change_state')
             if not cli.wait_for_service(timeout_sec=3.0):
                 self.get_logger().warn(f'{node}/change_state unavailable — skipping')
@@ -535,6 +562,9 @@ class NavPickOrchestrator(Node):
 
     # ── Gripper helpers ───────────────────────────────────────────────────────
 
+    def _weld_cb(self, msg: Bool):
+        self._weld_active = msg.data
+
     def set_gripper(self, values, label, duration=0.8, steps=20):
         start = self._last_gripper
         for i in range(1, steps + 1):
@@ -546,6 +576,74 @@ class NavPickOrchestrator(Node):
             rclpy.spin_once(self, timeout_sec=duration / steps)
         self._last_gripper = list(values)
         self.get_logger().info(f'gripper → {label}')
+        time.sleep(0.3)
+
+    def close_until_contact(self):
+        """Close one step at a time; stop the instant smart_grasp fires the weld.
+
+        Prevents the ODE "explosion" (box launching sideways) that happens when a
+        fixed closing angle keeps building contact force after the box is gripped.
+        Also works for any object size — large objects stop the fingers early,
+        small objects allow fingers to close further, no code change needed.
+
+        Safety floor: never closes past GRIPPER_GRASP even without contact.
+        """
+        self._weld_active = False   # clear stale state before the new attempt
+
+        j0    = self._last_gripper[0]
+        floor = GRIPPER_GRASP[0]    # -0.20 rad hard limit
+
+        step_rad = 0.005            # 0.5 deg per tick — very smooth
+        step_sec = 0.08             # 80 ms per tick
+
+        steps_taken = 0
+        while j0 > floor:
+            j0 = max(floor, j0 - step_rad)
+            t  = (GRIPPER_OPEN[0] - j0) / (GRIPPER_OPEN[0] - GRIPPER_GRASP[0])
+
+            cmd = Float64MultiArray()
+            cmd.data = [float(o + t * (c - o))
+                        for o, c in zip(GRIPPER_OPEN, GRIPPER_GRASP)]
+            self._gripper.publish(cmd)
+            self._last_gripper = cmd.data[:]
+            steps_taken += 1
+
+            rclpy.spin_once(self, timeout_sec=step_sec)
+
+            if self._weld_active:
+                self.get_logger().info(
+                    f'[close] smart_grasp weld at j0={j0:.3f} rad  '
+                    f'({steps_taken * step_sec:.1f} s)  HOLDING')
+                break
+
+            # Fallback: if smart_grasp hasn't fired by the estimated contact angle,
+            # fire the weld directly.  Prevents the box from sliding away while waiting
+            # for a contact sensor that may not detect the collision.
+            if j0 <= WELD_FALLBACK_ANGLE and not self._weld_active:
+                self.get_logger().info(
+                    f'[close] weld FALLBACK at j0={j0:.3f} rad '
+                    f'(smart_grasp silent — firing directly)')
+                self.attach(True)
+                break
+        else:
+            if not self._weld_active:
+                self.get_logger().warn(
+                    '[close] Reached floor -0.20 rad — weld never fired.')
+
+        # Back off fingers 2 steps from contact so the finger force doesn't fight
+        # the weld constraint — this eliminates the post-pick shaking.
+        if self._weld_active:
+            j_back = self._last_gripper[0] + 0.010
+            t_back = max(0.0, (GRIPPER_OPEN[0] - j_back) /
+                         (GRIPPER_OPEN[0] - GRIPPER_GRASP[0]))
+            back_cmd = Float64MultiArray()
+            back_cmd.data = [float(o + t_back * (c - o))
+                             for o, c in zip(GRIPPER_OPEN, GRIPPER_GRASP)]
+            self._gripper.publish(back_cmd)
+            self._last_gripper = back_cmd.data[:]
+            rclpy.spin_once(self, timeout_sec=0.15)
+            self.get_logger().info('[close] fingers backed off 0.01 rad — contact force removed')
+
         time.sleep(0.3)
 
     def attach(self, on: bool):
@@ -732,12 +830,16 @@ class NavPickOrchestrator(Node):
             self.get_logger().error('grasp pose failed — aborting')
             return False
 
-        # Weld the box to the gripper (sim aid), then gently close fingers around it
+        # Adaptive close: steps 0.5 deg at a time, stops the moment smart_grasp
+        # detects bilateral contact and fires the weld.  No fixed end angle —
+        # works for any object size and eliminates the ODE "explosion" that
+        # happened when a fixed -0.20 rad target kept building contact force
+        # after the box was already gripped.
         if USE_WELD:
             self.attach(True)
         else:
-            self.get_logger().info('WELD DISABLED — relying on the physical gripper grip only')
-        self.set_gripper(GRIPPER_GRASP, 'close (gentle)')
+            self.get_logger().info('USE_WELD=False — smart_grasp handles weld automatically')
+        self.close_until_contact()
 
         # Remove table collision so we can lift without phantom table-gripper collisions
         self.remove_table()
@@ -824,6 +926,130 @@ class NavPickOrchestrator(Node):
         self._cmd_vel_pub.publish(Twist())
         self.get_logger().info(f'backed up ~{abs(BACKUP_VEL_X) * BACKUP_SEC:.2f} m ✓')
 
+    # ── Place: navigate to second table ──────────────────────────────────────
+
+    def navigate_to_place_table(self):
+        self.get_logger().info('=== Place Step 1: Navigate to place table ===')
+        self._activate_nav2_cmdvel()
+
+        goal = NavigateToPose.Goal()
+        goal.pose.header.frame_id = 'map'
+        goal.pose.header.stamp = self.get_clock().now().to_msg()
+        goal.pose.pose.position.x = float(NAV_PLACE_X)
+        goal.pose.pose.position.y = float(NAV_PLACE_Y)
+        half = NAV_PLACE_YAW / 2.0
+        goal.pose.pose.orientation.z = math.sin(half)
+        goal.pose.pose.orientation.w = math.cos(half)
+
+        gh = None
+        for attempt in range(15):
+            send_fut = self._nav.send_goal_async(goal)
+            rclpy.spin_until_future_complete(self, send_fut, timeout_sec=10.0)
+            if send_fut.done():
+                gh = send_fut.result()
+                if gh is not None and gh.accepted:
+                    self.get_logger().info('Nav2 goal accepted — driving to place table…')
+                    break
+            self.get_logger().warn(f'Place nav goal rejected (attempt {attempt + 1}/15) — retrying…')
+            end = self.get_clock().now() + Duration(seconds=2.0)
+            while self.get_clock().now() < end:
+                rclpy.spin_once(self, timeout_sec=0.1)
+        else:
+            self.get_logger().error('Could not reach place table — aborting place')
+            return False
+
+        res_fut = gh.get_result_async()
+        rclpy.spin_until_future_complete(self, res_fut, timeout_sec=NAV_TIMEOUT_SEC)
+        if not res_fut.done() or res_fut.result().status != GoalStatus.STATUS_SUCCEEDED:
+            self.get_logger().error('Navigation to place table failed')
+            return False
+
+        self.get_logger().info('Arrived at place table approach — docking by odometry…')
+        self._silence_nav2_cmdvel()
+        time.sleep(1.0)   # let velocity_smoother fully deactivate before we own /cmd_vel
+
+        # Wait for a fresh odom reading
+        for _ in range(40):
+            rclpy.spin_once(self, timeout_sec=0.05)
+            if self._odom is not None:
+                break
+
+        if self._odom is None:
+            self.get_logger().warn('No odom available — skipping dock drive')
+            return True
+
+        _, oy = self._odom
+
+        # Absolute target: robot centre 0.24 m north of place table centre (y = -2.0).
+        # This is robust against Nav2 stopping anywhere within the ±0.25 m goal tolerance.
+        dock_target_y = -2.0 + PLACE_DOCK_M   # = -1.76
+
+        if oy <= dock_target_y:
+            self.get_logger().info(f'Nav2 delivered robot past dock target (y={oy:.3f}) — no drive needed')
+            self._cmd_vel_pub.publish(Twist())
+            return True
+
+        self.get_logger().info(
+            f'Place dock: driving south to y={dock_target_y:.3f} (now y={oy:.3f}, '
+            f'need {oy - dock_target_y:.3f} m)')
+        deadline = time.time() + 25.0
+        while time.time() < deadline:
+            rclpy.spin_once(self, timeout_sec=0.02)
+            cur_y = self._odom[1] if self._odom else oy
+            if cur_y <= dock_target_y:
+                self.get_logger().info(f'Place dock complete ✓ (y={cur_y:.3f})')
+                break
+            t = Twist()
+            t.linear.x = 0.10   # drive speed (m/s) — slightly faster than old 0.08
+            self._cmd_vel_pub.publish(t)
+            time.sleep(0.05)
+        self._cmd_vel_pub.publish(Twist())
+        time.sleep(0.5)
+        return True
+
+    # ── Place: lower box onto table and release ───────────────────────────────
+
+    def place_box(self):
+        self.get_logger().info('=== Place Step 2: Placing box on place table ===')
+        q  = TOPDOWN_QUAT
+        px = PLACE_DOCK_M   # 0.24 m ahead in base_link
+        py = 0.0
+        pz = PLACE_BOX_Z    # 0.08 m — same table height as pick
+
+        if not self.go_named('ready'):
+            self.get_logger().warn('ready pose failed — attempting place anyway')
+
+        # Hover above place target
+        if not self.go_pose(px, py, pz + PLACE_HOVER, q, 'place hover'):
+            self.get_logger().error('place hover IK failed — releasing here')
+            self.attach(False)
+            self.set_gripper(GRIPPER_OPEN, 'release')
+            return False
+
+        # Descend to set box on table surface
+        if not self.go_pose(px, py, pz + PLACE_ABOVE, q, 'place set'):
+            self.get_logger().error('place set IK failed — releasing here')
+            self.attach(False)
+            self.set_gripper(GRIPPER_OPEN, 'release')
+            return False
+
+        # Release: weld first so physics takes over, then open fingers
+        self.attach(False)
+        time.sleep(0.2)
+        self.set_gripper(GRIPPER_OPEN, 'release')
+        time.sleep(0.5)   # let box settle
+
+        # Lift clear of the placed box
+        for attempt in range(3):
+            if self.go_pose(px, py, pz + PLACE_HOVER, q,
+                            f'place retract (try {attempt + 1})'):
+                break
+            time.sleep(0.3)
+
+        self.go_named('home')
+        self.get_logger().info('=== Box placed on place table ✓ ===')
+        return True
+
     # ── Main sequence ─────────────────────────────────────────────────────────
 
     def calib_loop(self, base, n):
@@ -881,6 +1107,11 @@ class NavPickOrchestrator(Node):
         self.get_logger().info('  Nav-Pick Orchestrator — STARTING SEQUENCE   ')
         self.get_logger().info('══════════════════════════════════════════════')
 
+        # 0. Travel pose — wait for MoveIt first, then fold arm DOWN before driving so
+        #    joint2 (horizontal hinge) doesn't act as a pendulum during navigation.
+        self._wait_for_move_group()
+        self.go_named('travel')
+
         # 1. Navigate
         if not self.navigate_to_table():
             self.get_logger().error('Navigation failed — aborting')
@@ -923,7 +1154,31 @@ class NavPickOrchestrator(Node):
             f'({ox:.3f}, {oy:.3f}, {oz:.3f}) → ({bx:.3f}, {by:.3f}, {bz:.3f})')
         self.grasp_and_retract(bx, by, bz)
 
-        # 6. Back up
+        # 5b. If box is welded (grasp succeeded) — navigate to place table and place
+        if self._weld_active:
+            self.get_logger().info('Weld active — proceeding to place table')
+            self.unpin_base()              # MUST release pin before driving — pin vs Nav2 = violent shake
+            self.go_named('ready')         # arm elevated (box above LiDAR scan plane — no phantom obstacles)
+            # Back away from pickup table before Nav2 plans.
+            # Robot is parked 0.24 m from the table facing it — the table is dead ahead.
+            # Nav2 can't plan a path with an obstacle right in front of the robot; it
+            # would attempt to rotate/drive forward and hit the table instead.
+            self.get_logger().info('Clearing pickup table — reversing 0.6 m before Nav2…')
+            _twist = Twist()
+            _twist.linear.x = BACKUP_VEL_X   # -0.15 m/s
+            _t_end = time.time() + 4.0        # 0.15 × 4.0 = 0.60 m clearance
+            while time.time() < _t_end:
+                self._cmd_vel_pub.publish(_twist)
+                rclpy.spin_once(self, timeout_sec=0.1)
+            self._cmd_vel_pub.publish(Twist())
+            time.sleep(0.3)
+            if self.navigate_to_place_table():
+                self.pin_base()
+                self.place_box()
+        else:
+            self.get_logger().warn('Weld not active after grasp — skipping place step')
+
+        # 6. Back up from wherever the robot stopped
         self.back_up()
 
         self.get_logger().info('══════════════════════════════════════════════')

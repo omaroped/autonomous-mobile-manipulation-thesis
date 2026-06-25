@@ -12,7 +12,7 @@
       </visual>
       <collision>
         <geometry>
-          <mesh filename="package://mycobot_description/meshes/mycobot_280/gripper_base.dae"/>
+          <box size="0.060 0.060 0.028"/>
         </geometry>
         <origin xyz="0.0 0 -0.012" rpy="0 0 0"/>
       </collision>
@@ -30,11 +30,12 @@
         </geometry>
         <origin xyz="0.039 -0.0133 -0.012" rpy="0 0 0"/>
       </visual>
+      <!-- box replaces .dae collision: ODE ignores the mm unit tag, making the mesh 1000x too large -->
       <collision>
         <geometry>
-          <mesh filename="package://mycobot_description/meshes/mycobot_280/gripper_left1.dae"/>
+          <box size="0.036 0.013 0.024"/>
         </geometry>
-        <origin xyz="0.039 -0.0133 -0.012" rpy="0 0 0"/>
+        <origin xyz="0.037 -0.010 -0.012" rpy="0 0 0"/>
       </collision>
       <inertial>
         <mass value="0.03"/>
@@ -52,7 +53,7 @@
       </visual>
       <collision>
         <geometry>
-          <mesh filename="package://mycobot_description/meshes/mycobot_280/gripper_left2.dae"/>
+          <box size="0.036 0.018 0.008"/>
         </geometry>
         <origin xyz="0.005 -0.0195 -0.012" rpy="0 0 0"/>
       </collision>
@@ -72,7 +73,7 @@
       </visual>
       <collision>
         <geometry>
-          <mesh filename="package://mycobot_description/meshes/mycobot_280/gripper_left3.dae"/>
+          <box size="0.005 0.036 0.036"/>
         </geometry>
         <origin xyz="0.012 0.0025 -0.012" rpy="0 0 0"/>
       </collision>
@@ -90,11 +91,12 @@
         </geometry>
         <origin xyz="-0.039 -0.0133 -0.012" rpy="0 0 0"/>
       </visual>
+      <!-- box replaces .dae collision: ODE ignores the mm unit tag, making the mesh 1000x too large -->
       <collision>
         <geometry>
-          <mesh filename="package://mycobot_description/meshes/mycobot_280/gripper_right1.dae"/>
+          <box size="0.013 0.024 0.036"/>
         </geometry>
-        <origin xyz="-0.039 -0.0133 -0.012" rpy="0 0 0"/>
+        <origin xyz="-0.037 -0.010 -0.012" rpy="0 0 0"/>
       </collision>
       <inertial>
         <mass value="0.03"/>
@@ -112,7 +114,7 @@
       </visual>
       <collision>
         <geometry>
-          <mesh filename="package://mycobot_description/meshes/mycobot_280/gripper_right2.dae"/>
+          <box size="0.018 0.008 0.036"/>
         </geometry>
         <origin xyz="-0.005 -0.0195 -0.012" rpy="0 0 0"/>
       </collision>
@@ -132,7 +134,7 @@
       </visual>
       <collision>
         <geometry>
-          <mesh filename="package://mycobot_description/meshes/mycobot_280/gripper_right3.dae"/>
+          <box size="0.036 0.036 0.005"/>
         </geometry>
         <origin xyz="-0.012 0.0025 -0.012" rpy="0 0 0"/>
       </collision>

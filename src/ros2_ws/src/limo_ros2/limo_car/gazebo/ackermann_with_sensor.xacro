@@ -1,36 +1,21 @@
 <?xml version="1.0"?>
-<<<<<<< HEAD
 <robot name="limo_ackermann" xmlns:xacro="http://www.ros.org/wiki/xacro">
 
     <!-- use_camera:=false drops the GPU depth camera (driving/nav demos with the GUI),
          which avoids the intermittent Gazebo Classic depth-camera segfault under load. -->
     <xacro:arg name="use_camera" default="true"/>
     <xacro:property name="use_camera" value="$(arg use_camera)"/>
-=======
-<!--Auto: Zhui Li-->
-<!--E-Mail: lz554113510@gmail.com -->
-<!--Company: Institut für Intermodale Transport- und Logistiksysteme in Technische Universität Braunschweig -->
-<!-- Description: Diese xacro-Datei basiert auf Regeln und definiert Funktionen durch xacro,
-um die Erstellung der ganzen Struktur des Wagens in Ackerman-Type zu ermöglichen. Das Fahrzeuggrundmodell und
-andere Sensoren zusammengebaut werden und laden sie das Modell in Gazebo.-->
-
-<robot name="limo_ackermann" xmlns:xacro="http://www.ros.org/wiki/xacro">
->>>>>>> origin/master
 
     <xacro:include filename="$(find limo_car)/gazebo/ackermann.xacro" />
     <xacro:include filename="$(find limo_car)/gazebo/sensor.xacro" />
 
-<<<<<<< HEAD
     <!-- Instantiate the robot base -->
     <xacro:limo_ackermann />
-=======
->>>>>>> origin/master
 
     <!-- ************************* Laser ****************************** -->
     <xacro:gazebo_laser frame_prefix="laser" />
 
     <joint name="laser_joint" type="fixed">
-<<<<<<< HEAD
         <origin xyz="0.1236 0 -0.01" rpy="0 0 0"/>   <!-- realistic LIMO front-low mount; works now that the laser's own collision is 0.001 (was blinded by a 0.032 self-collision puck) -->
         <parent link="base_link"/>
         <child link="laser_link"/>
@@ -47,20 +32,6 @@ andere Sensoren zusammengebaut werden und laden sie das Modell in Gazebo.-->
         </joint>
     </xacro:if>
 
-=======
-        <origin xyz="0.1236 0 -0.01" rpy="0 0 0"/>
-        <parent link="base_link"/>
-        <child link="laser_link"/>
-    </joint>
-    <!-- ************************* Depth-camera *********************** -->
-    <xacro:gazebo_depth_camera frame_prefix="depth_camera" />
-
-    <joint name="depth_camera_joint" type="fixed">
-        <origin xyz="0.1 0 0.065" rpy="0 0 0"/>
-        <parent link="base_link"/>
-        <child link="depth_camera_link"/>
-    </joint>
->>>>>>> origin/master
     <!-- ************************* IMU ******************************** -->
     <xacro:gazebo_imu frame_prefix="imu" />
 
@@ -69,7 +40,6 @@ andere Sensoren zusammengebaut werden und laden sie das Modell in Gazebo.-->
         <parent link="base_link"/>
         <child link="imu_link"/>
     </joint>
-<<<<<<< HEAD
 
     <!-- ************************* MyCobot 280 Arm ************************ -->
     <xacro:include filename="$(find mycobot_description)/urdf/mycobot_280_m5/mycobot_280_m5.urdf" />
@@ -110,6 +80,4 @@ andere Sensoren zusammengebaut werden und laden sie das Modell in Gazebo.-->
     <!-- ************************* ROS 2 Control ************************** -->
     <xacro:include filename="$(find limo_car)/gazebo/mycobot_ros2_control.xacro" />
 
-=======
->>>>>>> origin/master
 </robot>

@@ -19,7 +19,9 @@ BASE_JOINTS = [
     'front_left_steer_joint', 'front_left_wheel_joint',
     'front_right_steer_joint', 'front_right_wheel_joint',
     'rear_left_wheel_joint', 'rear_right_wheel_joint',
-    'steering_wheel_joint',
+    # 'steering_wheel_joint' removed — this joint doesn't exist in the diff-drive
+    # URDF; publishing it caused MoveIt to log "Joint not found" 200+ times per run
+    # at 30 Hz (once per CurrentStateMonitor update tick).
 ]
 
 
