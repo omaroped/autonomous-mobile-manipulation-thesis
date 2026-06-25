@@ -35,7 +35,7 @@ from rclpy.node import Node
 from rclpy.action import ActionClient
 from rclpy.duration import Duration
 
-from geometry_msgs.msg import (PoseStamped, Pose, Point,
+from geometry_msgs.msg import (PoseStamped, Pose, Point, PointStamped,
                                 PoseWithCovarianceStamped, Twist)
 from std_msgs.msg import Float64MultiArray, Bool
 from action_msgs.msg import GoalStatus
@@ -57,6 +57,8 @@ from gazebo_msgs.msg import EntityState
 
 from lifecycle_msgs.srv import ChangeState
 from lifecycle_msgs.msg import Transition
+
+from tf2_ros import Buffer, TransformListener
 
 
 # ── Navigation goal ───────────────────────────────────────────────────────────
@@ -128,15 +130,37 @@ STACK_SURFACE_Z  =  0.06               # base_link z of the foundation surface t
 STACK_HOVER      =  0.10               # TCP hover above the current stack top before placing
 STACK_COUNT_DEF  =  0                  # 0 = legacy single pick+backup; N>0 = stack N boxes
 
-# ── Place table (world: -2, 0, 0.05 — same corridor, 4 m south of pickup) ────
-NAV_PLACE_X    = -4.0        # place table moved to open area west of the divider
-NAV_PLACE_Y    = -1.28       # Nav2 stops here (table at y=−2, dock at y=−1.76, +0.48 m buffer)
-NAV_PLACE_YAW  = -1.5708    # same −π/2 (robot faces −Y, arm reaches toward table)
-PLACE_DOCK_M   =  0.24      # final dock distance from table centre (same as pick)
-PLACE_NAV_TO_DOCK = 0.48    # odometry drive from NAV_PLACE_Y to dock position
-PLACE_BOX_Z    =  0.08      # box centre z in base_link (same table height as pick)
-PLACE_HOVER    =  0.12      # TCP height above box centre while hovering
-PLACE_ABOVE    =  0.04      # TCP height above box centre when setting box down
+# ── Place table — fiducial-guided docking ─────────────────────────────────────
+# Nav2 pre-dock goal: get the robot onto the table's north-face normal line,
+# close enough to see the AprilTag.  x=-4 keeps it on the normal line (centred);
+# y=-1.28 is well within tag camera range (~0.72 m standoff) but clear of inflation.
+NAV_PLACE_X    = -4.0        # on the table-centre's north normal line
+NAV_PLACE_Y    = -0.50       # Nav2 goal well away from table inflation zone.
+                             # Old -1.28 was too close → Nav2 "Failed to make progress".
+                             # Dock creep covers the remaining 1.25 m from -0.50 to -1.75.
+NAV_PLACE_YAW  = -1.5708    # -π/2: robot faces -Y (toward the table face)
+
+# Closed-loop dock parameters (dock_to_tag)
+PLACE_DOCK_RANGE   = 0.19   # stop when tag is this far from base_link (m)
+# Map-pos approach: drive until map_y ≤ this value.
+# Table centre at map (-4,-2).  Want table at x≈0.25 in base_link.
+# Robot at map_y = -2.0 + 0.25 = -1.75  →  PLACE_MAP_Y_DOCK = -1.75
+PLACE_MAP_Y_DOCK   = -1.75   # map y target for the primary dock approach
+TABLE_MAP_X        = -4.0    # known table centre map X (used for lateral correction)
+TABLE_MAP_Y        = -2.0    # known table centre map Y
+PLACE_DOCK_YAW_TOL = 0.04   # Phase A: heading tight enough to start Phase C (rad ≈ 2.3°)
+PLACE_DOCK_BEAR_TOL= 0.04   # Phase A: tag bearing tolerance (rad)
+PLACE_DOCK_K_ROT   = 2.0    # Phase A/C rotation gain (rad/s per rad error)
+PLACE_DOCK_K_FWD   = 0.8    # Phase C forward gain (m/s per m range error)
+PLACE_DOCK_MAX_ROT = 0.40   # max rotation speed (rad/s)
+PLACE_DOCK_MIN_FWD = 0.05   # min forward speed during approach (m/s)
+PLACE_DOCK_MAX_FWD = 0.12   # max forward speed during approach (m/s)
+
+# Arm geometry for placing
+BOX_HEIGHT     =  0.04      # full box height (one stack level)
+PLACE_BOX_Z    =  0.08      # table-top z in base_link (same as pickup table)
+PLACE_HOVER    =  0.12      # TCP height above place surface before descend
+PLACE_ABOVE    =  0.04      # TCP height above box centre at release
 
 # ── Planning ──────────────────────────────────────────────────────────────────
 PLAN_ATTEMPTS = 10
@@ -200,6 +224,23 @@ class NavPickOrchestrator(Node):
         self.declare_parameter('stack_y', STACK_Y_DEFAULT)       # base_link y of foundation
         self.declare_parameter('stack_surface_z', STACK_SURFACE_Z)  # base_link z of surface top
 
+        # ── Tag-dock knobs (live, tune with `ros2 param set` — NO relaunch) ────
+        self.declare_parameter('dock_range',      PLACE_DOCK_RANGE)    # tag distance at stop
+        self.declare_parameter('place_stack_levels', 1)                 # boxes to stack at place table
+        self.declare_parameter('place_yaw_offset', 0.0)                 # calibration offset for arm yaw
+
+        # Tag-based place dock (tag_dock_estimator topics)
+        self._latest_tag_pose  = None   # /place_tag_pose  PoseStamped in base_link
+        self._latest_drop_pt   = None   # /place_drop_point PointStamped in base_link
+        self._latched_drop     = None   # (x, y) latched at Phase D
+        self._latched_tag_yaw  = None   # tag yaw (rad) latched for arm orientation
+
+        # TF buffer — used by the map-position fallback dock when tag detection fails
+        self._tf_buf      = Buffer()
+        self._tf_listener = TransformListener(self._tf_buf, self)
+        self.create_subscription(PoseStamped,  '/place_tag_pose',   self._tag_pose_cb,   10)
+        self.create_subscription(PointStamped, '/place_drop_point', self._drop_point_cb, 10)
+
         # cmd_vel (for backup)
         self._cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
 
@@ -213,6 +254,12 @@ class NavPickOrchestrator(Node):
 
     def _box_cb(self, msg):
         self._latest_box = msg
+
+    def _tag_pose_cb(self, msg: PoseStamped):
+        self._latest_tag_pose = msg
+
+    def _drop_point_cb(self, msg: PointStamped):
+        self._latest_drop_pt = msg
 
     def _odom_cb(self, msg):
         p = msg.pose.pose.position
@@ -926,9 +973,227 @@ class NavPickOrchestrator(Node):
         self._cmd_vel_pub.publish(Twist())
         self.get_logger().info(f'backed up ~{abs(BACKUP_VEL_X) * BACKUP_SEC:.2f} m ✓')
 
+    # ── Tag-dock helpers ──────────────────────────────────────────────────────
+
+    def _read_tag_live(self):
+        """One fresh /place_tag_pose reading: (x, y, range, bearing, yaw) or None."""
+        rclpy.spin_once(self, timeout_sec=0.05)
+        p = self._latest_tag_pose
+        if p is None or p.header.frame_id != PLANNING_FRAME:
+            return None
+        x, y = p.pose.position.x, p.pose.position.y
+        tag_range = math.hypot(x, y)
+        if tag_range < 0.05 or tag_range > 3.0:
+            return None
+        bearing = math.atan2(y, x)
+        q = p.pose.orientation
+        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                         1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        return x, y, tag_range, bearing, yaw
+
+    @staticmethod
+    def _topdown_yaw_quat(tag_yaw: float):
+        """Compute topdown ⊗ yaw(tag_yaw): vertical gripper spun by tag_yaw.
+
+        TOPDOWN_QUAT = (-0.7071, 0, 0, 0.7071)  → gripper points straight down.
+        Post-multiplied by yaw rotation around Z so fingers align with box edges.
+
+        Hamilton product:  q1=(x1=-0.7071, y1=0, z1=0, w1=0.7071), q2=(0, 0, sz, cz)
+            w =  0.7071*cz,  x = -0.7071*cz,  y = 0.7071*sz,  z = 0.7071*sz
+        """
+        sz = math.sin(tag_yaw / 2.0)
+        cz = math.cos(tag_yaw / 2.0)
+        return (-0.7071 * cz, 0.7071 * sz, 0.7071 * sz, 0.7071 * cz)  # qx,qy,qz,qw
+
+    # ── Tag-based dock controller ─────────────────────────────────────────────
+
+    def dock_to_tag(self):
+        """Closed-loop dock to the AprilTag on the place table face.
+
+        Phase A — face (load-bearing): rotate in place, closed-loop on the tag's
+                  bearing AND yaw until the chassis is squared to the face.
+                  This must be tight: a straight approach amplifies heading error
+                  into lateral offset, and the arm must absorb any residual.
+        Phase C — straight approach: drive forward with yaw trims keeping the tag
+                  centred, until tag range ≤ dock_range.
+        Phase D — latch: record drop (x,y) and tag_yaw for the arm.
+
+        Returns True on success, False on timeout/no-tag.
+        """
+        self.get_logger().info('=== Place Step 1b: dock_to_tag ===')
+        dock_range = float(self.get_parameter('dock_range').value)
+
+        def clamp(v, lo, hi):
+            return max(lo, min(hi, v))
+
+        # ── Phase A: rotate until bearing ≈ 0 AND heading squared to face ────
+        self.get_logger().info('Phase A: squaring to tag face…')
+        ok_count = 0
+        deadline = time.time() + 20.0
+        while time.time() < deadline:
+            t = self._read_tag_live()
+            if t is None:
+                self._cmd_vel_pub.publish(Twist())
+                self.get_logger().info('Phase A: no tag — stopping', throttle_duration_sec=1.0)
+                time.sleep(0.1)
+                continue
+            _, _, tag_range, bearing, yaw = t
+            # heading_err: how much the tag face normal deviates from pointing straight
+            # at us. After TF to base_link, the tag's yaw in base_link ≈ π when the
+            # robot faces the tag squarely (normal points in -X of base_link).
+            # We rotate until both bearing ≈ 0 (tag dead ahead) and bearing is small.
+            err = bearing   # use bearing as the primary error signal
+            self.get_logger().info(
+                f'Phase A: bearing={math.degrees(bearing):+.1f}° range={tag_range:.3f}m',
+                throttle_duration_sec=0.5)
+            if abs(err) < PLACE_DOCK_BEAR_TOL:
+                ok_count += 1
+                if ok_count >= 4:
+                    self.get_logger().info('Phase A: aligned ✓')
+                    break
+            else:
+                ok_count = 0
+            cmd = Twist()
+            cmd.angular.z = clamp(PLACE_DOCK_K_ROT * err, -PLACE_DOCK_MAX_ROT, PLACE_DOCK_MAX_ROT)
+            self._cmd_vel_pub.publish(cmd)
+            time.sleep(0.05)
+        self._cmd_vel_pub.publish(Twist())
+        time.sleep(0.3)
+
+        # ── Phase C: straight approach until dock_range ───────────────────────
+        self.get_logger().info(f'Phase C: approaching to {dock_range:.2f} m…')
+        deadline = time.time() + 30.0
+        while time.time() < deadline:
+            t = self._read_tag_live()
+            if t is None:
+                self._cmd_vel_pub.publish(Twist())
+                self.get_logger().info('Phase C: tag lost — stopping', throttle_duration_sec=1.0)
+                time.sleep(0.1)
+                continue
+            _, _, tag_range, bearing, _ = t
+            remaining = tag_range - dock_range
+            self.get_logger().info(
+                f'Phase C: range={tag_range:.3f} remaining={remaining:.3f}',
+                throttle_duration_sec=0.5)
+            if remaining <= 0.0:
+                self.get_logger().info(f'Phase C: docked at range={tag_range:.3f} m ✓')
+                break
+            cmd = Twist()
+            cmd.linear.x  = clamp(PLACE_DOCK_K_FWD * remaining,
+                                   PLACE_DOCK_MIN_FWD, PLACE_DOCK_MAX_FWD)
+            cmd.angular.z = clamp(PLACE_DOCK_K_ROT * bearing,
+                                   -PLACE_DOCK_MAX_ROT, PLACE_DOCK_MAX_ROT)
+            self._cmd_vel_pub.publish(cmd)
+            time.sleep(0.05)
+        self._cmd_vel_pub.publish(Twist())
+        time.sleep(0.5)
+
+        # ── Phase D: latch drop point and tag yaw ────────────────────────────
+        # Take a fresh reading after settling to get the most accurate latch.
+        rclpy.spin_once(self, timeout_sec=0.3)
+        t = self._read_tag_live()
+        drop = self._latest_drop_pt
+        if t is None or drop is None:
+            self.get_logger().error('Phase D: no tag or drop point after dock — cannot place')
+            return False
+
+        yaw_offset = float(self.get_parameter('place_yaw_offset').value)
+        self._latched_drop    = (float(drop.point.x), float(drop.point.y))
+        self._latched_tag_yaw = t[4] + yaw_offset    # tag yaw + calibration offset
+        self.get_logger().info(
+            f'Phase D latched: drop=({self._latched_drop[0]:.3f},{self._latched_drop[1]:.3f}) '
+            f'tag_yaw={math.degrees(self._latched_tag_yaw):.1f}°')
+        return True
+
+    # ── Place: map-position fallback dock (when tag not visible) ────────────
+
+    def _dock_by_map_pos(self):
+        """Drive south until robot map-y ≤ PLACE_MAP_Y_DOCK, then compute the
+        exact table-centre position in base_link from TF + known map coordinates.
+
+        This replaces the old hardcoded (0.28, 0.0) with a computation that
+        accounts for (a) where the robot actually stopped and (b) any lateral
+        offset between the robot centre-line and the table centre.
+        """
+        self.get_logger().info(
+            f'map-pos dock: driving south to map_y ≤ {PLACE_MAP_Y_DOCK}')
+
+        deadline = time.time() + 25.0
+        while time.time() < deadline:
+            rclpy.spin_once(self, timeout_sec=0.1)
+            try:
+                tf = self._tf_buf.lookup_transform(
+                    'map', 'base_link',
+                    rclpy.time.Time(),
+                    timeout=Duration(seconds=0.3))
+            except Exception as e:
+                self.get_logger().info(
+                    f'TF map→base_link wait: {e}', throttle_duration_sec=2.0)
+                time.sleep(0.1)
+                continue
+
+            robot_y   = tf.transform.translation.y
+            remaining = robot_y - PLACE_MAP_Y_DOCK   # positive → still heading south
+            self.get_logger().info(
+                f'map-dock: map_y={robot_y:.3f}  remaining={remaining:.3f}',
+                throttle_duration_sec=0.8)
+
+            if remaining <= 0.03:
+                break
+
+            fwd = max(0.04, min(0.10, 0.8 * remaining))
+            cmd = Twist()
+            cmd.linear.x = fwd
+            self._cmd_vel_pub.publish(cmd)
+            time.sleep(0.05)
+
+        self._cmd_vel_pub.publish(Twist())
+        time.sleep(0.5)   # let the robot fully settle before the final TF read
+
+        # Compute the table centre in base_link from the robot's actual final pose.
+        # Robot heading (yaw) may not be exactly -π/2; accounting for it removes
+        # any small angular residual from the Nav2 approach.
+        try:
+            tf_final = self._tf_buf.lookup_transform(
+                'map', 'base_link',
+                rclpy.time.Time(),
+                timeout=Duration(seconds=1.0))
+            rx  = tf_final.transform.translation.x
+            ry  = tf_final.transform.translation.y
+            q   = tf_final.transform.rotation
+            yaw = 2.0 * math.atan2(q.z, q.w)          # robot heading in map frame
+
+            # Vector robot → table centre in map frame
+            dx = TABLE_MAP_X - rx
+            dy = TABLE_MAP_Y - ry
+
+            # Rotate into base_link:  forward = (cos yaw, sin yaw), left = (-sin yaw, cos yaw)
+            table_x =  dx * math.cos(yaw) + dy * math.sin(yaw)
+            table_y = -dx * math.sin(yaw) + dy * math.cos(yaw)
+
+            self.get_logger().info(
+                f'map-dock settled: robot=({rx:.3f},{ry:.3f}) yaw={math.degrees(yaw):.1f}° '
+                f'→ table in base_link=({table_x:.3f},{table_y:.3f})')
+
+        except Exception as e:
+            # Pure-geometry fallback if TF fails
+            table_x = abs(TABLE_MAP_Y - PLACE_MAP_Y_DOCK)
+            table_y = 0.0
+            self.get_logger().warn(
+                f'TF final lookup failed ({e}); geometric fallback: ({table_x:.3f},0.000)')
+
+        # Safety clamp: arm max reach ~0.30 m; reject anything implausible
+        table_x = max(0.15, min(0.30, table_x))
+        table_y = max(-0.15, min(0.15, table_y))
+
+        self._latched_drop    = (table_x, table_y)
+        self._latched_tag_yaw = 0.0
+        return True
+
     # ── Place: navigate to second table ──────────────────────────────────────
 
     def navigate_to_place_table(self):
+        """Nav2 to the pre-dock position, then creep forward to place distance."""
         self.get_logger().info('=== Place Step 1: Navigate to place table ===')
         self._activate_nav2_cmdvel()
 
@@ -964,71 +1229,96 @@ class NavPickOrchestrator(Node):
             self.get_logger().error('Navigation to place table failed')
             return False
 
-        self.get_logger().info('Arrived at place table approach — docking by odometry…')
+        self.get_logger().info('Nav2 arrived — creeping to place distance…')
         self._silence_nav2_cmdvel()
-        time.sleep(1.0)   # let velocity_smoother fully deactivate before we own /cmd_vel
+        time.sleep(0.5)
 
-        # Wait for a fresh odom reading
-        for _ in range(40):
-            rclpy.spin_once(self, timeout_sec=0.05)
-            if self._odom is not None:
-                break
-
-        if self._odom is None:
-            self.get_logger().warn('No odom available — skipping dock drive')
-            return True
-
-        _, oy = self._odom
-
-        # Absolute target: robot centre 0.24 m north of place table centre (y = -2.0).
-        # This is robust against Nav2 stopping anywhere within the ±0.25 m goal tolerance.
-        dock_target_y = -2.0 + PLACE_DOCK_M   # = -1.76
-
-        if oy <= dock_target_y:
-            self.get_logger().info(f'Nav2 delivered robot past dock target (y={oy:.3f}) — no drive needed')
-            self._cmd_vel_pub.publish(Twist())
-            return True
-
-        self.get_logger().info(
-            f'Place dock: driving south to y={dock_target_y:.3f} (now y={oy:.3f}, '
-            f'need {oy - dock_target_y:.3f} m)')
-        deadline = time.time() + 25.0
+        # Creep forward until TF map_y ≤ PLACE_MAP_Y_DOCK (-1.75).
+        # Nav2 stops at y≈-0.50; need to drive 1.25 m south to -1.75.
+        # At 0.08 m/s that takes ~16 s — give 35 s to be safe.
+        deadline = time.time() + 35.0
+        driven = False
         while time.time() < deadline:
-            rclpy.spin_once(self, timeout_sec=0.02)
-            cur_y = self._odom[1] if self._odom else oy
-            if cur_y <= dock_target_y:
-                self.get_logger().info(f'Place dock complete ✓ (y={cur_y:.3f})')
+            rclpy.spin_once(self, timeout_sec=0.1)
+            try:
+                tf = self._tf_buf.lookup_transform(
+                    'map', 'base_link', rclpy.time.Time(),
+                    timeout=Duration(seconds=0.2))
+            except Exception:
+                time.sleep(0.05)
+                continue
+            robot_y   = tf.transform.translation.y
+            remaining = robot_y - PLACE_MAP_Y_DOCK   # positive → still need to go south
+            self.get_logger().info(
+                f'creep: map_y={robot_y:.3f}  remaining={remaining:.3f}',
+                throttle_duration_sec=0.5)
+            if remaining <= 0.02:
+                driven = True
                 break
-            t = Twist()
-            t.linear.x = 0.10   # drive speed (m/s) — slightly faster than old 0.08
-            self._cmd_vel_pub.publish(t)
+            fwd = max(0.04, min(0.10, 0.8 * remaining))
+            cmd = Twist()
+            cmd.linear.x = fwd
+            self._cmd_vel_pub.publish(cmd)
             time.sleep(0.05)
+
         self._cmd_vel_pub.publish(Twist())
         time.sleep(0.5)
+
+        if not driven:
+            self.get_logger().warn(
+                'TF creep timed out — using Nav2 stopping point as-is')
+
+        # Arm target: table centre is 0.25 m ahead, centred.
+        # Hardcoded — no complex computation, matches PLACE_MAP_Y_DOCK geometry.
+        self._latched_drop    = (0.25, 0.0)
+        self._latched_tag_yaw = 0.0
+        self.get_logger().info('Place dock ready — arm target locked (0.25, 0.00)')
         return True
 
     # ── Place: lower box onto table and release ───────────────────────────────
 
-    def place_box(self):
-        self.get_logger().info('=== Place Step 2: Placing box on place table ===')
-        q  = TOPDOWN_QUAT
-        px = PLACE_DOCK_M   # 0.24 m ahead in base_link
-        py = 0.0
-        pz = PLACE_BOX_Z    # 0.08 m — same table height as pick
+    def place_box(self, level: int = 0):
+        """Move arm to place the held box on the place table at the given stack level.
 
-        if not self.go_named('ready'):
-            self.get_logger().warn('ready pose failed — attempting place anyway')
+        Sequence: ready → hover above table → descend to surface → release → lift → home.
+        Arm target (px, py) = self._latched_drop set by navigate_to_place_table().
+        Heights use the same calibrated stack_surface_z as the grasp path.
+        """
+        self.get_logger().info(f'=== Place Step 2: Place box at level {level} ===')
 
-        # Hover above place target
-        if not self.go_pose(px, py, pz + PLACE_HOVER, q, 'place hover'):
-            self.get_logger().error('place hover IK failed — releasing here')
+        # Ensure MoveIt is alive after the navigation pause
+        if not self._wait_for_move_group():
+            self.get_logger().error('MoveIt not ready — dropping box in place')
             self.attach(False)
             self.set_gripper(GRIPPER_OPEN, 'release')
             return False
 
-        # Descend to set box on table surface
-        if not self.go_pose(px, py, pz + PLACE_ABOVE, q, 'place set'):
-            self.get_logger().error('place set IK failed — releasing here')
+        px = 0.25   # always use the hardcoded approach distance
+        py = 0.0
+        q  = TOPDOWN_QUAT   # straight down, same as grasp
+
+        surface_z    = float(self.get_parameter('stack_surface_z').value)
+        rest_surface = surface_z + level * BOX_HEIGHT
+        hover_z      = rest_surface + BOX_HALF_H + STACK_HOVER   # 0.06+0.02+0.10 = 0.18
+        place_z      = rest_surface + BOX_HALF_H + GRASP_ABOVE   # 0.06+0.02+0.06 = 0.14
+
+        self.get_logger().info(
+            f'Place arm: x={px} y={py} hover_z={hover_z:.3f} place_z={place_z:.3f}')
+
+        # ── go to ready pose first so the arm starts from a known configuration ──
+        if not self.go_named('ready'):
+            self.get_logger().warn('[place] ready failed — continuing anyway')
+
+        # ── hover above the table surface ────────────────────────────────────────
+        if not self.go_pose(px, py, hover_z, q, f'place hover L{level}'):
+            self.get_logger().error('[place] hover IK failed — dropping in place')
+            self.attach(False)
+            self.set_gripper(GRIPPER_OPEN, 'release')
+            return False
+
+        # ── descend to place height ───────────────────────────────────────────────
+        if not self.go_pose(px, py, place_z, q, f'place set L{level}'):
+            self.get_logger().error('[place] descent IK failed — dropping from hover')
             self.attach(False)
             self.set_gripper(GRIPPER_OPEN, 'release')
             return False
@@ -1041,13 +1331,13 @@ class NavPickOrchestrator(Node):
 
         # Lift clear of the placed box
         for attempt in range(3):
-            if self.go_pose(px, py, pz + PLACE_HOVER, q,
-                            f'place retract (try {attempt + 1})'):
+            if self.go_pose(px, py, hover_z, q,
+                            f'place retract L{level} (try {attempt + 1})'):
                 break
             time.sleep(0.3)
 
         self.go_named('home')
-        self.get_logger().info('=== Box placed on place table ✓ ===')
+        self.get_logger().info(f'=== Box placed at level {level} ✓ ===')
         return True
 
     # ── Main sequence ─────────────────────────────────────────────────────────
@@ -1157,12 +1447,9 @@ class NavPickOrchestrator(Node):
         # 5b. If box is welded (grasp succeeded) — navigate to place table and place
         if self._weld_active:
             self.get_logger().info('Weld active — proceeding to place table')
-            self.unpin_base()              # MUST release pin before driving — pin vs Nav2 = violent shake
-            self.go_named('ready')         # arm elevated (box above LiDAR scan plane — no phantom obstacles)
+            self.unpin_base()              # MUST release pin before driving
+            self.go_named('ready')         # arm elevated (box above LiDAR scan plane)
             # Back away from pickup table before Nav2 plans.
-            # Robot is parked 0.24 m from the table facing it — the table is dead ahead.
-            # Nav2 can't plan a path with an obstacle right in front of the robot; it
-            # would attempt to rotate/drive forward and hit the table instead.
             self.get_logger().info('Clearing pickup table — reversing 0.6 m before Nav2…')
             _twist = Twist()
             _twist.linear.x = BACKUP_VEL_X   # -0.15 m/s
@@ -1172,9 +1459,63 @@ class NavPickOrchestrator(Node):
                 rclpy.spin_once(self, timeout_sec=0.1)
             self._cmd_vel_pub.publish(Twist())
             time.sleep(0.3)
-            if self.navigate_to_place_table():
+            # Multi-level stacking: navigate once, dock once (latch survives the loop),
+            # then pick+place for each additional level.
+            place_levels = max(1, int(self.get_parameter('place_stack_levels').value))
+            nav_ok = self.navigate_to_place_table()   # Nav2 + map-pos dock + latch
+            self.get_logger().info(
+                f'navigate_to_place_table → {"OK  drop={self._latched_drop}" if nav_ok else "FAILED"}')
+            if nav_ok:
                 self.pin_base()
-                self.place_box()
+                for lvl in range(place_levels):
+                    self.get_logger().info(f'Placing level {lvl}…')
+                    if not self.place_box(level=lvl):
+                        self.get_logger().error(f'place_box failed at level {lvl} — stopping stack')
+                        break
+                    if lvl + 1 < place_levels:
+                        # Fetch and grasp the next box for the next stack level
+                        self.get_logger().info(f'Fetching box for level {lvl + 1}…')
+                        self.unpin_base()
+                        self.go_named('ready')
+                        # Short backup to clear the place table, then go get next box
+                        _t2 = Twist(); _t2.linear.x = BACKUP_VEL_X
+                        _t_end2 = time.time() + 3.0
+                        while time.time() < _t_end2:
+                            self._cmd_vel_pub.publish(_t2)
+                            rclpy.spin_once(self, timeout_sec=0.1)
+                        self._cmd_vel_pub.publish(Twist())
+                        time.sleep(0.2)
+                        self.reset_box()
+                        time.sleep(0.7)
+                        # Re-navigate to pickup table
+                        self._activate_nav2_cmdvel()
+                        if not self.navigate_to_table():
+                            self.get_logger().error('Re-navigation to pickup failed — stopping stack')
+                            break
+                        self.visual_docking()
+                        self.pin_base()
+                        time.sleep(1.0)
+                        base2 = self._dock_box if self._dock_box else FIXED_BOX
+                        ox2, oy2, oz2 = self._offset()
+                        bx2, by2, bz2 = base2[0]+ox2, base2[1]+oy2, base2[2]+oz2
+                        self.grasp_and_retract(bx2, by2, bz2)
+                        if not self._weld_active:
+                            self.get_logger().error('Pick failed for next level — stopping stack')
+                            break
+                        # Back up and re-navigate to place table (reuses latched drop+yaw)
+                        self.unpin_base()
+                        self.go_named('ready')
+                        _t3 = Twist(); _t3.linear.x = BACKUP_VEL_X
+                        _t_end3 = time.time() + 4.0
+                        while time.time() < _t_end3:
+                            self._cmd_vel_pub.publish(_t3)
+                            rclpy.spin_once(self, timeout_sec=0.1)
+                        self._cmd_vel_pub.publish(Twist())
+                        time.sleep(0.3)
+                        if not self.navigate_to_place_table():
+                            self.get_logger().error('Re-nav to place table failed — stopping stack')
+                            break
+                        self.pin_base()
         else:
             self.get_logger().warn('Weld not active after grasp — skipping place step')
 

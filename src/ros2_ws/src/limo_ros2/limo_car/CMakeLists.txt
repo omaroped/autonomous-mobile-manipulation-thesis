@@ -24,7 +24,7 @@ if(BUILD_TESTING)
 endif()
 
 install(
-  DIRECTORY config launch gazebo log meshes rviz src urdf worlds scripts maps
+  DIRECTORY config launch gazebo log meshes rviz src urdf worlds scripts maps media
   DESTINATION share/${PROJECT_NAME}
 )
 
@@ -61,6 +61,18 @@ install(PROGRAMS scripts/calib_pick.py
   RENAME calib_pick DESTINATION lib/${PROJECT_NAME})
 install(PROGRAMS scripts/place_scenario.py
   RENAME place_scenario DESTINATION lib/${PROJECT_NAME})
+
+# ── Fiducial place pipeline ────────────────────────────────────────────────
+install(PROGRAMS scripts/tag_dock_estimator.py
+  RENAME tag_dock_estimator DESTINATION lib/${PROJECT_NAME})
+install(PROGRAMS scripts/ik_place_check.py
+  RENAME ik_place_check DESTINATION lib/${PROJECT_NAME})
+# gen_apriltag.py is a one-shot generator (run once, not a ROS node)
+install(PROGRAMS scripts/gen_apriltag.py
+  RENAME gen_apriltag DESTINATION lib/${PROJECT_NAME})
+
+install(PROGRAMS scripts/test_place_arm.py
+  RENAME test_place_arm DESTINATION lib/${PROJECT_NAME})
 
 # (mecanum_bridge.py intentionally NOT installed — it was only for the abandoned
 #  mecanum/planar_move drive; the diff-drive base needs no cmd_vel/odom bridge.)

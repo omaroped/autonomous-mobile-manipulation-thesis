@@ -29,6 +29,8 @@
   <depend>nav2_msgs</depend>
   <depend>gazebo_msgs</depend>
   <depend>lifecycle_msgs</depend>
+  <!-- AprilTag detection via cv2.aruco (bundled in python3-opencv-contrib-python).
+       No separate ROS apriltag package needed. Fallback: ros-humble-apriltag. -->
   
   <export>
     <build_type>ament_cmake</build_type>

@@ -106,6 +106,23 @@ def generate_launch_description():
             output='screen',
             parameters=[{'use_sim_time': True}])])
 
+    # ── 4b. tag_dock_estimator — delay 15 s (parallel with box_estimator) ────
+    # Detects AprilTag 36h11 on the place table, publishes /place_tag_pose and
+    # /place_drop_point. Requires the same camera topics as box_pose_estimator.
+    tag_estimator = TimerAction(
+        period=15.0,
+        actions=[Node(
+            package='limo_car',
+            executable='tag_dock_estimator',
+            name='tag_dock_estimator',
+            output='screen',
+            parameters=[{
+                'use_sim_time': True,
+                'tag_size': 0.08,       # tag face width in metres
+                'table_side': 0.18,     # square table side length in metres
+                'table_top_z': 0.10,    # table top height above ground in metres
+            }])])
+
     # ── 5. grasp_attacher — delay 15 s ───────────────────────────────────────
     grasp_attacher = TimerAction(
         period=15.0,
@@ -150,6 +167,7 @@ def generate_launch_description():
         moveit_launch,
         nav2_launch,
         box_estimator,
+        tag_estimator,
         grasp_attacher,
         smart_grasp,
         orchestrator,

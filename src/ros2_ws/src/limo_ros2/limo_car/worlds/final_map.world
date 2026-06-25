@@ -224,20 +224,89 @@
       </link>
     </model>
 
-    <!-- Place table: identical dimensions to pickup_table, 4 m south.
-         Blue colour so it's visually distinct in Gazebo. -->
+    <!-- Place table: 0.18×0.18×0.10 m square, neutral grey.
+         Reachable from any of 4 sides (arm reach 0.24-0.28 m > half-side 0.09 m).
+         AprilTag 36h11 face plates (ID 0-3) on each vertical face for fiducial docking.
+         Tag plates are 0.001 m thin so they don't affect collision geometry.
+         Table top at z=0.10; tag centres at z=0.075 (mid-face height). -->
     <model name='place_table'>
       <static>1</static>
-      <pose>-4 -2 0.05 0 0 0</pose>
-      <link name='link'>
+      <pose>-4 -2 0 0 0 0</pose>
+      <!-- Main body -->
+      <link name='body'>
+        <pose>0 0 0.05 0 0 0</pose>
         <collision name='col'>
-          <geometry><box><size>0.3 0.08 0.1</size></box></geometry>
+          <geometry><box><size>0.18 0.18 0.10</size></box></geometry>
         </collision>
         <visual name='vis'>
-          <geometry><box><size>0.3 0.08 0.1</size></box></geometry>
+          <geometry><box><size>0.18 0.18 0.10</size></box></geometry>
           <material>
-            <ambient>0.1 0.3 0.8 1</ambient>
-            <diffuse>0.1 0.3 0.8 1</diffuse>
+            <ambient>0.55 0.55 0.55 1</ambient>
+            <diffuse>0.55 0.55 0.55 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+        <self_collide>0</self_collide>
+      </link>
+      <!-- Tag face plates — thin visual-only panels on each vertical face.
+           Pose is relative to model origin (floor level, table centre).
+           Face normal outward (+Y = north, -Y = south, +X = east, -X = west).
+           Tag ID 0: North face (+Y, yaw=0) -->
+      <link name='tag_north'>
+        <pose>0 0.091 0.075 0 0 0</pose>
+        <visual name='vis'>
+          <geometry><box><size>0.10 0.001 0.10</size></box></geometry>
+          <material>
+            <script>
+              <uri>model://limo_car/media/materials/scripts/apriltag.material</uri>
+              <uri>model://limo_car/media/materials/textures/</uri>
+              <name>AprilTag_0</name>
+            </script>
+          </material>
+        </visual>
+        <self_collide>0</self_collide>
+      </link>
+      <!-- Tag ID 1: South face (-Y, yaw=π) -->
+      <link name='tag_south'>
+        <pose>0 -0.091 0.075 0 0 3.14159</pose>
+        <visual name='vis'>
+          <geometry><box><size>0.10 0.001 0.10</size></box></geometry>
+          <material>
+            <script>
+              <uri>model://limo_car/media/materials/scripts/apriltag.material</uri>
+              <uri>model://limo_car/media/materials/textures/</uri>
+              <name>AprilTag_1</name>
+            </script>
+          </material>
+        </visual>
+        <self_collide>0</self_collide>
+      </link>
+      <!-- Tag ID 2: East face (+X, yaw=-π/2) -->
+      <link name='tag_east'>
+        <pose>0.091 0 0.075 0 0 -1.5708</pose>
+        <visual name='vis'>
+          <geometry><box><size>0.10 0.001 0.10</size></box></geometry>
+          <material>
+            <script>
+              <uri>model://limo_car/media/materials/scripts/apriltag.material</uri>
+              <uri>model://limo_car/media/materials/textures/</uri>
+              <name>AprilTag_2</name>
+            </script>
+          </material>
+        </visual>
+        <self_collide>0</self_collide>
+      </link>
+      <!-- Tag ID 3: West face (-X, yaw=+π/2) -->
+      <link name='tag_west'>
+        <pose>-0.091 0 0.075 0 0 1.5708</pose>
+        <visual name='vis'>
+          <geometry><box><size>0.10 0.001 0.10</size></box></geometry>
+          <material>
+            <script>
+              <uri>model://limo_car/media/materials/scripts/apriltag.material</uri>
+              <uri>model://limo_car/media/materials/textures/</uri>
+              <name>AprilTag_3</name>
+            </script>
           </material>
         </visual>
         <self_collide>0</self_collide>

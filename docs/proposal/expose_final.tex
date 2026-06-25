@@ -77,11 +77,14 @@
 \end{tcolorbox}
 
 \vspace{0.5em}
-\noindent\textbf{Alternative titles considered:}
+\noindent\textbf{Alternative titles (generic --- final title to be agreed with supervisor):}
 \begin{itemize}[label=\textbullet, leftmargin=1.5em]
-    \item Autonomous Mobile Manipulation for On-Demand Manufacturing: A Sim-to-Real Study on the LIMO Cobot
-    \item Iterative Pick-and-Stack with a Compact Mobile Manipulator: Quantifying Pose Drift and Sim-to-Real Gap
-    \item Coordinated Navigation and Manipulation on the Agilex LIMO Cobot: From Gazebo Simulation to Physical Deployment
+    \item Autonomous Mobile Manipulation: A Simulation-to-Reality Study on the LIMO Cobot
+    \item Sim-to-Real Transfer for Autonomous Mobile Manipulation in On-Demand Manufacturing
+    \item From Simulation to Reality: Autonomous Pick-Place-Stack with a Compact Mobile Manipulator
+    \item Coordinated Navigation and Manipulation for Autonomous Box Stacking: A Sim-to-Real Approach
+    \item Bridging Simulation and Reality in Autonomous Mobile Manipulation
+    \item Autonomous Mobile Manipulation with Error-Aware Sim-to-Real Transfer
 \end{itemize}
 
 \vspace{0.5em}
@@ -104,9 +107,12 @@
     and manipulation framework (MoveIt\,2) be configured and coordinated for a
     \emph{multi-step} pick-transport-place-return cycle on a single resource-constrained
     platform?
-    \item \textbf{Drift characterisation.} How does position error accumulate over
-    repeated navigation cycles, and at what drift magnitude does the arm's reachable
-    envelope fail to encompass the target object?
+    \item \textbf{Drift characterisation and error recovery.} How does position error
+    accumulate over repeated navigation cycles, at what drift magnitude does the arm's
+    reachable envelope fail to encompass the target object, and \emph{can the system
+    detect this error (re-checking the object pose with the camera before each place)
+    and recover --- correcting, retrying, or flagging for human intervention --- rather
+    than failing blindly?}
     \item \textbf{Simulation-to-reality transfer.} What is the quantitative gap between
     the simulation baseline (perfect odometry, zero drift) and real-hardware performance
     --- which subsystems transfer directly and where does the gap emerge?
@@ -121,7 +127,10 @@
     mobile manipulation pipeline integrating Nav2 (differential-drive navigation),
     MoveIt\,2 (collision-aware arm planning), and HSV+depth-camera perception,
     coordinated by a mission state machine that executes \emph{pick $\to$ transport $\to$
-    stack $\to$ return} cycles without human intervention.
+    stack $\to$ return} cycles without human intervention. The place table is a
+    \textbf{fixed, known station marked with an AprilTag fiducial}, giving the robot a
+    precise, repeatable docking and drop reference; a \emph{verify-before-place} step
+    re-checks the target pose with the camera before each placement.
     \item \textbf{Stacking Experiment} --- Implement a vertical box-stacking experiment
     in Gazebo: the robot picks boxes from a source table one by one, navigates to a
     target table, places each box on top of the previous one, and returns for the next
@@ -130,11 +139,17 @@
     error and grasp success rate. Identify the iteration $N^*$ at which drift causes
     the first grasp failure. Characterise the relationship between accumulated drift and
     task failure mode.
-    \item \textbf{Sim-to-Real Evaluation} --- Deploy the validated pipeline on the
-    physical LIMO Cobot. Compare simulation drift profiles (upper bound: perfect odom)
-    against hardware drift profiles (real encoder odometry + AMCL) to quantify the
-    sim-to-real gap and identify which assumptions the simulation makes that break on
-    hardware.
+    \item \textbf{Sim-to-Real Evaluation and Error Analysis} --- Deploy the validated
+    pipeline on the physical LIMO Cobot. Compare simulation drift profiles (upper bound:
+    perfect odom) against hardware drift profiles (real encoder odometry + AMCL) to
+    quantify the sim-to-real gap and identify which assumptions the simulation makes that
+    break on hardware. Crucially, analyse \emph{how the system handles error in
+    practice}: log every placement failure, distinguish random from \emph{systematic}
+    drift (errors that recur after a predictable number of iterations), and evaluate the
+    verify-before-place recovery behaviour --- how reliably the robot detects a bad pose
+    and corrects, retries, or hands off. The amount of validation performed on hardware
+    versus simulation (a staged 50--100\,\% split) is a deliberate methodological choice
+    reported as part of this evaluation.
 \end{enumerate}
 
 \newpage
@@ -145,15 +160,23 @@
 \subsection{In Scope}
 \begin{itemize}[label=\checkmark, leftmargin=1.5em]
     \item Autonomous navigation in a controlled, static indoor environment (flat ground,
-    known layout, static obstacles).
+    known layout, static obstacles). The map is built with \emph{distinct, asymmetric
+    features} (not an empty or symmetric space) so that AMCL can localise reliably.
     \item \textbf{Differential-drive} kinematic model --- permits in-place rotation,
     enabling the robot to align precisely with either table before each pick/place.
     \item Multi-cycle vertical box stacking: pick from Table\,1, place on Table\,2,
     repeat for up to $N=20$ cycles.
+    \item \textbf{Fixed, fiducial-marked place station.} The place table is at a known
+    position carrying an AprilTag marker; the robot docks and drops against this
+    fiducial reference for precise, repeatable stacking. (The fixed-position assumption
+    can be relaxed in future work.)
     \item 6-DoF arm manipulation of small standardised boxes (known colour, known size).
     \item Depth-camera object detection and 3-D pose estimation (HSV + pin-hole
-    de-projection).
+    de-projection), with a \emph{verify-before-place} re-check of the target pose prior
+    to each placement.
     \item Quantitative drift analysis: per-iteration position error and grasp success.
+    \item Basic autonomous error handling: detection of failed/drifted placements and
+    recovery by retry or human hand-off.
     \item Sim-to-real comparison: Gazebo (perfect odom) vs.\ physical hardware
     (AMCL + real encoders).
 \end{itemize}
@@ -226,10 +249,21 @@ drift or localisation error accumulates and eventually exceeds the arm's grasp
 tolerance. The iteration at which the first grasp failure occurs is a concrete,
 platform-specific metric that characterises the system's operational limits.
 
+To make stacking precise and repeatable, the target table is a \textbf{fixed station
+marked with an AprilTag fiducial}: the robot docks against this known reference and,
+before each placement, re-checks the box pose with its camera (\emph{verify-before-place})
+rather than placing blindly --- so that a navigation error does not silently propagate
+into a misplaced box.
+
 A central contribution is the \textbf{sim-to-real analysis}: the full 20-cycle
 experiment is run in simulation (establishing an upper bound with perfect odometry),
 and then on the physical hardware (exposing real drift), allowing a direct quantitative
-comparison of how well simulation predicts real performance.
+comparison of how well simulation predicts real performance. A second contribution is
+the \textbf{error-handling analysis}: because real systems fail, the thesis characterises
+\emph{how} the pipeline fails and recovers --- distinguishing random from systematic
+drift, and evaluating whether the robot can detect a bad placement and correct, retry,
+or request help. This reframes failure from a defect into a measured, analysable
+property of the system.
 
 \newpage
 
@@ -283,15 +317,22 @@ comparison of how well simulation predicts real performance.
 \subsection{Remaining Engineering Work}
 
 \begin{enumerate}[label=\textbf{\arabic*.}, leftmargin=1.5em, itemsep=0.3em]
-    \item \textbf{Place stage} (currently a stub) --- implement arm motion to lower
-    box onto the stack and release.
+    \item \textbf{Place stage} --- arm place motion (hover $\to$ descend $\to$ release
+    $\to$ lift) is implemented and verified in isolation; remaining work is the
+    \emph{docking calibration} so the base parks square in front of the place table
+    rather than beside it.
+    \item \textbf{Fiducial docking + verify-before-place} --- AprilTag detection on the
+    fixed place table to close the docking loop precisely, and a camera re-check of the
+    box pose before each placement.
     \item \textbf{Two-table navigation} --- add Table\,2 to world, add return waypoint.
     \item \textbf{Stacking height tracking} --- increment Z-target by one box height
     per cycle.
     \item \textbf{Iteration loop + data logger} --- run 20 cycles, log per-iteration
-    pick/place success, nav position error, detected box pose.
+    pick/place success, nav position error, detected box pose, and any error-recovery
+    events.
     \item \textbf{Hardware deployment} --- swap Gazebo plugins for real hardware drivers,
-    run 20 cycles on physical LIMO Cobot.
+    run the stacking cycles on the physical LIMO Cobot (staged 50--100\,\% hardware
+    coverage by subsystem).
 \end{enumerate}
 
 \newpage
