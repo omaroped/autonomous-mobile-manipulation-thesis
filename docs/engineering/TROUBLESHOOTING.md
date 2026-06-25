@@ -241,6 +241,47 @@ This session focused on making the adaptive gripper actually hold the box. The c
 
 ---
 
+## 2.3 Session 2026-06-25 — Place Table, Navigation Fixes, Dock Drive
+
+This session completed the full pick-and-place cycle by fixing every remaining failure between the post-pick backup and the final box placement. The full nav→pick→backup→navigate→dock→place sequence now runs end-to-end.
+
+### 1.36 Robot Drives Into Pickup Table After Pick (LiDAR Too High)
+* **Symptom:** After picking the box, Nav2 planned a path that drove the robot forward into the pickup table rather than around it.
+* **Root Cause:** The LiDAR sits at z=0.14 m. The pickup table top is at z=0.10 m — 4 cm below the scan plane. The LiDAR never sees the table, so it appears as free space in the obstacle layer. Nav2 happily planned straight through it.
+* **Fix:** Baked both the pickup table and the place table as occupied pixels (value=0) directly into the static PGM map (`thesis_map.pgm`). The global planner's static_layer now treats both tables as permanent obstacles regardless of LiDAR, and plans around them. Conversion: `col = (wx − OX)/RES`, `row = H − 1 − (wy − OY)/RES` (y-axis is flipped in PGM).
+
+### 1.37 Zero-Width Corridor — Robot Stuck Between Two Inflated Zones
+* **Symptom:** After the pickup, the robot got stuck trying to navigate south. In RViz the global path appeared, but the robot oscillated in place without making progress.
+* **Root Cause:** `station_a_assembly` at (−3.5, 5) had its east edge at x=−3.1. Inflated by 0.45 m → x=−2.65. The pickup table west edge at x=−2.20, inflated by 0.45 m → x=−2.65. The two inflated bubbles met exactly: zero-width corridor at x=−2.65. NavFN cannot route through a zero-width gap.
+* **Fix:** Moved `station_a_assembly` from (−3.5, 5) to (−5.0, 7.5) in `final_map.world`. East edge now at −4.6, inflated to −4.15. Corridor between inflated zones: −2.65 − (−4.15) = **1.50 m** — ample for the robot.
+
+### 1.38 Place Table Too Close to Divider Wall — NavFN Routed Through Tight Squeeze
+* **Symptom:** Nav2 routed the robot east toward the divider wall instead of southwest to the place table. The path went through a narrow gap near the divider, causing the robot to turn into the wall.
+* **Root Cause:** Place table was at (−2, 0) — same X corridor as the pickup table and directly north of the divider. NavFN computed the east route as lower total cost because the west route had more distance penalty. The divider at y=1 created a pinch on the east side.
+* **Fix:** Moved place table from (−2, 0) to (−4, −2) — open area west of the divider. NavFN now plans a clear southwest diagonal. Clearances: 17 cm north of place table's inflated zone, 1.45 m from west wall inflation, 2.0 m west of divider.
+
+### 1.39 Place Dock Drive Did Not Move Robot (collision_monitor Override)
+* **Symptom:** After Nav2 reached the place approach waypoint, the dock drive (publishing Twist(0.10) to /cmd_vel) produced no robot movement. The robot stopped at ~y=−1.19 and the arm placed the box in mid-air 0.21 m north of the table.
+* **Root Cause:** The dock drive called `_silence_nav2_cmdvel()` which deactivated `velocity_smoother` and `controller_server` but NOT `collision_monitor`. The collision monitor was still active and, receiving no input on its `cmd_vel_smoothed` topic, published safety-stop zero velocity to `/cmd_vel` at its own rate — overriding the orchestrator's direct `/cmd_vel` publication.
+* **Fix:** Added `collision_monitor` to both `_silence_nav2_cmdvel()` (deactivate before direct driving) and `_activate_nav2_cmdvel()` (re-activate before Nav2 navigation). File: `limo_car/scripts/nav_pick_orchestrator.py`.
+
+### 1.40 Place Dock Used Fixed Distance — Robot Stopped Wrong Relative to Table
+* **Symptom:** Even when the dock drive did move the robot, the box was placed in the wrong position. Nav2's ±0.25 m goal tolerance meant the robot could stop anywhere from y=−1.03 to y=−1.53, but the dock drove a fixed 0.48 m from wherever Nav2 stopped. The arm target (px=0.24 m in base_link) could land anywhere from y=−1.75 to y=−2.25 in world frame — sometimes missing the table entirely.
+* **Root Cause:** `drive = PLACE_NAV_TO_DOCK` (fixed constant) measured from the Nav2 stop position, which varies by ±0.25 m.
+* **Fix:** Replaced fixed-distance drive with absolute odometry target: drive until `odom_y ≤ −1.76` (= place table centre −2.0 m + arm reach 0.24 m). This converges to the correct dock position regardless of where Nav2 stopped. File: `limo_car/scripts/nav_pick_orchestrator.py`.
+
+### 1.41 Travel Pose Creates Phantom LiDAR Obstacle When Carrying Box
+* **Symptom:** When the arm was placed in the 'travel' pose during transit to the place table, Nav2 timed out (120 s) navigating a 6 m path that should take ~25 s. The robot moved at <0.03 m/s instead of 0.25 m/s.
+* **Root Cause:** The 'travel' pose folds the arm forward and low. With the box welded to the gripper, the box (35 mm cube) passes through the LiDAR scan plane (z=0.14 m) at a distance >0.35 m from the robot centre. The obstacle layer sees the box as a moving external obstacle. This phantom obstacle follows the robot, causing Nav2 to constantly replan and trigger recovery behaviours.
+* **Fix:** Reverted transit pose from 'travel' back to 'ready'. In the 'ready' pose the arm is elevated and the box stays above the LiDAR plane — no phantom obstacle. 'Travel' is still used at startup (before the box is picked) where there is no box to create the artifact.
+
+### 1.42 Nav2 Lifecycle Race Condition — map_server Fails to Configure
+* **Symptom:** Intermittently on launch, the Nav2 lifecycle manager logged `Failed to change state for node: map_server` and aborted bringup. All navigation then failed with status 6 (ABORTED). The map_server PGM load actually completed successfully but was reported too late.
+* **Root Cause:** The lifecycle_manager's internal service-call timeout (~5 s) fired before the map_server had finished parsing the PGM map and registering its `change_state` service. The lifecycle_manager interpreted the timeout as failure and aborted the entire Nav2 bringup.
+* **Fix:** Wrapped both lifecycle_manager nodes in a `TimerAction(period=6.0)` in `nav2_limo.launch.py`. All Nav2 nodes start immediately but the lifecycle_manager waits 6 s before sending configure/activate requests, ensuring map_server is fully ready. File: `limo_car/launch/nav2_limo.launch.py`.
+
+---
+
 ## 3. Large Reference Logs
 
 For diagnostic history, refer to:
