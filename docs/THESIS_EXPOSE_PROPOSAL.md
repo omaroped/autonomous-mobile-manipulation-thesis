@@ -6,12 +6,14 @@ By Omar [Last Name], [Matriculation No.]
 
 ## Title
 
-**Autonomous Mobile Manipulation: Design and Evaluation of a Pick-and-Place Pipeline with Sequential Object Stacking**
+**Autonomous Mobile Manipulation: Design and Evaluation of a Pick-and-Place and Object Stacking Pipeline**
+
+> "Design and Evaluation" is intentionally generic: it covers both evaluation *in simulation* and evaluation *on the real robot*, so the simulation-to-reality transfer is carried implicitly as an evaluation objective rather than being fixed in the title. "Mobile" carries the locomotion/navigation aspect; "Pick-and-Place and Object Stacking" names the tasks without overclaiming complex assembly.
 
 *(Alternative titles for reference)*
 
-- *From Simulation to Reality: An Autonomous Pick-and-Place and Stacking Pipeline for a Mobile Manipulator* — use this if the sim-to-real arc becomes the primary contribution
-- *Autonomous Mobile Manipulation: Design and Evaluation of a Pick-and-Place Pipeline Applied to Object Stacking Scenarios* — use this if stacking remains partially validated by submission
+- *Autonomous Mobile Manipulation: Design, Evaluation, and Simulation-to-Reality Transfer of a Pick-and-Place Pipeline* — use this if the supervisor later wants the sim-to-real transfer made explicit in the title
+- *Autonomous Mobile Manipulation: Design and Evaluation of a Pick-and-Place Pipeline* — shorter form if object stacking is dropped from the headline
 
 ---
 
@@ -19,7 +21,7 @@ By Omar [Last Name], [Matriculation No.]
 
 *Primary language of study, as well as primary usage in literature relevant to the topic*
 
-**Autonomous Mobile Manipulation: Design and Evaluation of a Pick-and-Place Pipeline with Sequential Object Stacking**
+**Autonomous Mobile Manipulation: Design and Evaluation of a Pick-and-Place and Object Stacking Pipeline**
 
 Can an autonomous mobile manipulator — integrating Nav2 global navigation, camera-based visual-servo docking, RGB-D perception, and collision-aware MoveIt 2 motion planning — reliably execute a complete pick-and-place cycle on a standardized target object in a structured warehouse environment, and how do base-positioning constraints, manipulator workspace geometry, and platform kinematics govern grasp success when a short-reach arm is coupled with a mobile base?
 
