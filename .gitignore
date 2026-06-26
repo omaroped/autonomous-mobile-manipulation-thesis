@@ -140,5 +140,11 @@ docs/SUPER_MEMORY_PROMPT_v2_EXTENSION.md
 CLEANUP_REPORT.md
 docs/REORG_REPORT.md
 
-# ----- Proposal (kept local only — not published to GitHub) -----
+# ----- Proposal + thesis writing (kept local only — not published to GitHub) -----
 docs/proposal/
+docs/thesis/
+docs/meetings/
+docs/thesis_analysis/
+docs/teaching/
+docs/STACKING_EXPERIMENT_PLAN.md
+docs/THESIS_FROM_SCRATCH_PLAN.md
