@@ -29,17 +29,17 @@ How can a modular autonomous mobile-manipulation pipeline — integrating onboar
 
 ## Sub-Questions
 
-1. **Navigation.** How can the mobile base be autonomously and repeatably positioned so that the target object falls within the manipulator's reachable workspace, by combining global navigation (Nav2 / AMCL) with reactive vision-based docking, without prior knowledge of the object's exact pose?
+1. **Navigation.** How reliably and repeatably can an autonomous mobile base position itself such that a target object lies within the manipulator's reachable workspace, and to what extent does base-positioning accuracy determine subsequent grasp success?
 
-2. **Perception.** How can a target object's three-dimensional pose be estimated from onboard RGB-D data using lightweight, classical methods (colour segmentation and depth deprojection) and reliably transformed into the manipulator's planning frame?
+2. **Perception.** How accurately and robustly can a target object's three-dimensional pose be estimated from onboard RGB-D sensing and expressed in the manipulator's planning frame, and how does the resulting estimation error propagate to grasp success?
 
-3. **Manipulation and reachability.** How do the arm-mounting configuration, base stop distance, and workspace layout jointly constrain the reachable workspace of a short-reach (280 mm) manipulator, and how can collision-aware motion planning (MoveIt 2) generate safe, executable top-down grasp and place trajectories?
+3. **Manipulation and reachability.** To what extent do the arm-mounting configuration, base stop distance, and workspace geometry constrain the reachable workspace of a short-reach manipulator, and how can collision-aware motion planning ensure that grasp and placement trajectories remain safe and executable within those constraints?
 
-4. **Stacking precision.** With what precision and repeatability can objects be placed to enable sequential vertical stacking, and which factors — base-positioning error, perception error, and end-effector alignment — most limit stacking reliability?
+4. **Stacking precision.** With what precision and repeatability can objects be placed to achieve stable sequential vertical stacking, and which sources of error most strongly limit stacking reliability?
 
-5. **Evaluation in simulation.** What level of performance — task success rate, placement accuracy, planning time, and cycle time — does the integrated pipeline achieve across repeated simulation trials (N ≥ 20), and which failure modes dominate?
+5. **Evaluation in simulation.** What level of task performance — success rate, placement accuracy, planning time, and cycle time — does the integrated pipeline achieve under repeated trials, and which failure modes are dominant?
 
-6. **Simulation-to-reality transfer.** To what extent can the simulation-developed pipeline be transferred to the physical platform, how does real-world placement precision compare with simulation, and what engineering effort does the transfer require?
+6. **Simulation-to-reality transfer.** To what extent does a pipeline developed in simulation transfer to the physical robot, how does real-world performance compare with simulated performance, and what engineering effort does the transfer entail?
 
 ---
 
