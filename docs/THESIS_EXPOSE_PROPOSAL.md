@@ -1,8 +1,28 @@
 # Bachelor Thesis Exposé
 
-**Autonomous Mobile Manipulation for On-Demand Manufacturing: Vision-Guided Pick-and-Place with the AgileX LIMO Cobot in ROS 2**
-
 By Omar [Last Name], [Matriculation No.]
+
+---
+
+## Title Options
+
+*(Select one — ranked by flexibility and academic discoverability)*
+
+1. *Towards Autonomous Mobile Manipulation: A Pick-and-Place Pipeline for Object Stacking* **(Recommended — "Towards" protects scope if stacking is partial; "object stacking" keeps ambition visible for academic searches)**
+
+2. *Autonomous Mobile Manipulation: Design and Evaluation of a Pick-and-Place Pipeline Applied to Object Stacking Scenarios*
+
+3. *Autonomous Mobile Manipulation: Design and Evaluation of a Pick-and-Place Pipeline with Sequential Object Stacking*
+
+4. *From Simulation to Reality: An Autonomous Pick-and-Place and Stacking Pipeline for a Mobile Manipulator*
+
+5. *Navigation-Coupled Grasping for Autonomous Mobile Manipulation: Pick, Place, and Sequential Stacking in Structured Environments*
+
+6. *Design and Evaluation of an Autonomous Mobile Manipulation System for Pick-and-Place and Object Stacking*
+
+7. *Autonomous Mobile Manipulation: Design and Evaluation of a Pipeline for Sequential Pick-and-Place Operations*
+
+8. *Autonomous Mobile Manipulation: Design and Evaluation of a Pick-and-Place Pipeline*
 
 ---
 
@@ -10,7 +30,7 @@ By Omar [Last Name], [Matriculation No.]
 
 *Primary language of study, as well as primary usage in literature relevant to the topic*
 
-**Autonomous Mobile Manipulation for On-Demand Manufacturing: Vision-Guided Pick-and-Place with the AgileX LIMO Cobot in ROS 2**
+**Towards Autonomous Mobile Manipulation: A Pick-and-Place Pipeline for Object Stacking**
 
 Can an autonomous mobile manipulator — integrating Nav2 global navigation, camera-based visual-servo docking, RGB-D perception, and collision-aware MoveIt 2 motion planning — reliably execute a complete pick-and-place cycle on a standardized target object in a structured warehouse environment, and how do base-positioning constraints, manipulator workspace geometry, and platform kinematics govern grasp success when a short-reach arm is coupled with a mobile base?
 
