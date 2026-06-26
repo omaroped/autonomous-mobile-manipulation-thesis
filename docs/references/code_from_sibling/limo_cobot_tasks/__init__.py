@@ -1,1 +1,0 @@
-# LIMO Cobot tasks package

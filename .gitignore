@@ -140,11 +140,32 @@ docs/SUPER_MEMORY_PROMPT_v2_EXTENSION.md
 CLEANUP_REPORT.md
 docs/REORG_REPORT.md
 
-# ----- Proposal + thesis writing (kept local only — not published to GitHub) -----
-docs/proposal/
-docs/thesis/
-docs/meetings/
-docs/thesis_analysis/
-docs/teaching/
-docs/STACKING_EXPERIMENT_PLAN.md
-docs/THESIS_FROM_SCRATCH_PLAN.md
+# ----- Everything except source code — kept local only -----
+docs/
+cv/
+data/
+experiments/
+hardware/
+references/
+scratch/
+simulation/
+thesis_writing_resources/
+CHANGELOG.md
+PROJECT_NOTES.md
+RULES.md
+THESIS_EXPOSE.md
+VERIFICATION_GUIDE.md
+VERIFICATION_GUIDE.md
+handover_report.md
+requirements.txt
+reset_simulation.sh
+bridge_node.py
+bridge_params.yaml
+object_segmentation.cpp
+perception_params.yaml
+"Finalizing The Mushaf Quran App.md"
+"Fixing LIMO Autonomous Navigation Failures.md"
+src/notebooks/
+src/scripts/
+src/ros2_ws/src/mycobot_ros2/
+src/ros2_ws/src/gazebo_ros2_control/
