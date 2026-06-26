@@ -23,23 +23,23 @@ By Omar [Last Name], [Matriculation No.]
 
 **Autonomous Mobile Manipulation: Design and Evaluation of a Pick-and-Place and Object Stacking Pipeline**
 
-Can an autonomous mobile manipulator — integrating Nav2 global navigation, camera-based visual-servo docking, RGB-D perception, and collision-aware MoveIt 2 motion planning — reliably execute a complete pick-and-place cycle on a standardized target object in a structured warehouse environment, and how do base-positioning constraints, manipulator workspace geometry, and platform kinematics govern grasp success when a short-reach arm is coupled with a mobile base?
+How can a modular autonomous mobile-manipulation pipeline — integrating onboard navigation, RGB-D perception, and collision-aware motion planning — be designed and evaluated in a ROS 2 / Gazebo simulation to perform reliable and repeatable pick-and-place and object-stacking tasks with a compact mobile manipulator, and to what extent can the simulation-developed pipeline be transferred to and validated on the physical robot?
 
 ---
 
 ## Sub-Questions
 
-1. **Navigation:** How can the LIMO Cobot's mobile base be reliably driven to a graspable configuration relative to a target object, combining Nav2 global waypoint planning with reactive visual-servo precision docking, without a priori knowledge of the object's exact global pose?
+1. **Navigation.** How can the mobile base be autonomously and repeatably positioned so that the target object falls within the manipulator's reachable workspace, by combining global navigation (Nav2 / AMCL) with reactive vision-based docking, without prior knowledge of the object's exact pose?
 
-2. **Perception:** How can a target object's 3-D grasp pose be estimated from RGB-D sensor data (HSV colour segmentation and depth deprojection) and reliably transformed into the manipulator's planning frame under simulated sensor noise?
+2. **Perception.** How can a target object's three-dimensional pose be estimated from onboard RGB-D data using lightweight, classical methods (colour segmentation and depth deprojection) and reliably transformed into the manipulator's planning frame?
 
-3. **Workspace Coupling:** How do the arm mounting configuration, base stop distance, and workspace layout interact to determine reachability and grasp success when the myCobot 280 M5 (280 mm reach) is coupled with the LIMO mobile base?
+3. **Manipulation and reachability.** How do the arm-mounting configuration, base stop distance, and workspace layout jointly constrain the reachable workspace of a short-reach (280 mm) manipulator, and how can collision-aware motion planning (MoveIt 2) generate safe, executable top-down grasp and place trajectories?
 
-4. **Planning Safety:** How does collision-aware motion planning — inserting support surfaces and collision objects into the MoveIt 2 planning scene — improve grasp reliability compared with open-loop arm motion?
+4. **Stacking precision.** With what precision and repeatability can objects be placed to enable sequential vertical stacking, and which factors — base-positioning error, perception error, and end-effector alignment — most limit stacking reliability?
 
-5. **Evaluation:** What are the quantitative outcomes of the full autonomous pipeline — grasp success rate, final-pose accuracy, planning time, and cycle time — across repeated simulation trials (N ≥ 20)?
+5. **Evaluation in simulation.** What level of performance — task success rate, placement accuracy, planning time, and cycle time — does the integrated pipeline achieve across repeated simulation trials (N ≥ 20), and which failure modes dominate?
 
-6. **Sim-to-Real Transfer (susceptible to change):** To what extent can the simulation-validated pipeline be deployed and validated on the physical LIMO Cobot platform?
+6. **Simulation-to-reality transfer.** To what extent can the simulation-developed pipeline be transferred to the physical platform, how does real-world placement precision compare with simulation, and what engineering effort does the transfer require?
 
 ---
 
