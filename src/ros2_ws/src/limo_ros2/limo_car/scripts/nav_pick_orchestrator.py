@@ -26,7 +26,9 @@ Design notes:
   - If Nav2 is not running the node fails fast with a clear error.
 """
 
+import csv
 import math
+import os
 import statistics
 import time
 
@@ -208,6 +210,9 @@ class NavPickOrchestrator(Node):
         # distance (TRUE), y/z from the accurate far perception. Used for the grasp so
         # we don't aim at the camera's inflated close-range distance.
         self._dock_box = None
+        # Table top height in base_link derived from the first perception reading.
+        # Eliminates the need to hand-tune stack_surface_z for each new deployment.
+        self._table_top_base_z = None
 
         # ── Calibration knobs (live, tune with `ros2 param set` — NO relaunch) ──
         self.declare_parameter('grasp_off_x', GRASP_OFFSET[0])
@@ -250,6 +255,11 @@ class NavPickOrchestrator(Node):
         self._pin_pose  = None
         self._pin_timer = None
 
+        # ── Metrics (Phase 4) ────────────────────────────────────────────────────
+        self._metrics: list[dict] = []   # one dict per cycle, flushed to CSV at end
+        self._cycle_start: float  = 0.0
+        self.declare_parameter('metrics_csv', '')   # empty = auto-name under data/
+
     # ── Callbacks ─────────────────────────────────────────────────────────────
 
     def _box_cb(self, msg):
@@ -270,6 +280,79 @@ class NavPickOrchestrator(Node):
         if self._odom is None:
             return None
         return math.hypot(self._odom[0] - x0, self._odom[1] - y0)
+
+    # ── Metrics harness (Phase 4) ─────────────────────────────────────────────
+
+    def _cycle_begin(self, cycle_idx: int):
+        """Mark the start of cycle `cycle_idx` (0-indexed)."""
+        self._cycle_start = time.time()
+        self._current_cycle = {
+            'cycle':              cycle_idx,
+            'pick_success':       False,
+            'transport_retained': False,
+            'dock_via_tag':       False,
+            'place_success':      False,
+            'placement_err_x':    float('nan'),
+            'placement_err_y':    float('nan'),
+            'placement_err_z':    float('nan'),
+            'cycle_time_s':       float('nan'),
+        }
+
+    def _cycle_measure_placement(self, expected_x: float, expected_y: float,
+                                 expected_z: float):
+        """Query Gazebo for the actual box position and record XYZ error."""
+        if not self._get_state.service_is_ready():
+            return
+        name = self.get_parameter('box_name').value
+        req = GetEntityState.Request()
+        req.name = name
+        req.reference_frame = 'world'
+        fut = self._get_state.call_async(req)
+        rclpy.spin_until_future_complete(self, fut, timeout_sec=3.0)
+        if not fut.done() or not fut.result().success:
+            self.get_logger().warn('[metrics] get_entity_state failed — placement error not recorded')
+            return
+        p = fut.result().state.pose.position
+        self._current_cycle['placement_err_x'] = round(p.x - expected_x, 4)
+        self._current_cycle['placement_err_y'] = round(p.y - expected_y, 4)
+        self._current_cycle['placement_err_z'] = round(p.z - expected_z, 4)
+        err_xy = math.hypot(p.x - expected_x, p.y - expected_y)
+        self.get_logger().info(
+            f'[metrics] box world=({p.x:.3f},{p.y:.3f},{p.z:.3f}) '
+            f'target=({expected_x:.3f},{expected_y:.3f},{expected_z:.3f}) '
+            f'err_xy={err_xy:.4f} m')
+
+    def _cycle_end(self):
+        """Finalise the current cycle dict and append to the metrics list."""
+        if not hasattr(self, '_current_cycle'):
+            return
+        self._current_cycle['cycle_time_s'] = round(time.time() - self._cycle_start, 2)
+        self._metrics.append(self._current_cycle)
+        self.get_logger().info(
+            f'[metrics] cycle {self._current_cycle["cycle"]} done: '
+            f'pick={self._current_cycle["pick_success"]} '
+            f'retain={self._current_cycle["transport_retained"]} '
+            f'place={self._current_cycle["place_success"]} '
+            f't={self._current_cycle["cycle_time_s"]}s')
+
+    def flush_metrics(self):
+        """Write all collected metrics to a CSV file under data/."""
+        if not self._metrics:
+            return
+        csv_path = self.get_parameter('metrics_csv').value
+        if not csv_path:
+            data_dir = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                '..', '..', '..', '..', '..', 'data')
+            os.makedirs(data_dir, exist_ok=True)
+            ts = time.strftime('%Y%m%d_%H%M%S')
+            csv_path = os.path.join(data_dir, f'metrics_{ts}.csv')
+        fieldnames = list(self._metrics[0].keys())
+        with open(csv_path, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(self._metrics)
+        self.get_logger().info(f'[metrics] wrote {len(self._metrics)} rows → {csv_path}')
 
     def _offset(self):
         """Current grasp offset (live ROS params — tunable without relaunch)."""
@@ -500,6 +583,12 @@ class NavPickOrchestrator(Node):
             # After driving straight to STOP_DISTANCE, the box sits at base_link
             # x≈STOP_DISTANCE (TRUE), with the accurate far-range y/z unchanged.
             self._dock_box = (STOP_DISTANCE, box0[1], box0[2])
+            # Derive pickup table top height from the box centre (box top − half-height).
+            # This eliminates the need to hand-tune stack_surface_z.
+            self._table_top_base_z = box0[2] - BOX_HALF_H
+            self.get_logger().info(
+                f'table_top_base_z derived from perception: {self._table_top_base_z:.4f} m '
+                f'(box_centre_z={box0[2]:.4f})')
         else:
             b = self._read_box_live()
             d0 = b[0] if b else FIXED_BOX[0]
@@ -1027,9 +1116,12 @@ class NavPickOrchestrator(Node):
             return max(lo, min(hi, v))
 
         # ── Phase A: rotate until bearing ≈ 0 AND heading squared to face ────
+        # 8 s timeout: if the tag is not visible at all from the Nav2 stopping point
+        # (too far, bad angle) we fail fast so the map-position fallback can take over
+        # instead of burning 20 s printing "no tag".
         self.get_logger().info('Phase A: squaring to tag face…')
         ok_count = 0
-        deadline = time.time() + 20.0
+        deadline = time.time() + 8.0
         while time.time() < deadline:
             t = self._read_tag_live()
             if t is None:
@@ -1269,10 +1361,16 @@ class NavPickOrchestrator(Node):
         px, py = self._latched_drop if self._latched_drop is not None else (0.25, 0.0)
         q  = TOPDOWN_QUAT   # straight down, same as grasp
 
-        surface_z    = float(self.get_parameter('stack_surface_z').value)
+        # Prefer the perception-derived table top (captured at pickup dock).
+        # Falls back to the live param if perception never ran (e.g. calib mode).
+        param_z = float(self.get_parameter('stack_surface_z').value)
+        surface_z = self._table_top_base_z if self._table_top_base_z is not None else param_z
+        self.get_logger().info(
+            f'[place] surface_z={surface_z:.4f} '
+            f'({"perceived" if self._table_top_base_z is not None else "param fallback"})')
         rest_surface = surface_z + level * BOX_HEIGHT
-        hover_z      = rest_surface + BOX_HALF_H + STACK_HOVER   # 0.06+0.02+0.10 = 0.18
-        place_z      = rest_surface + BOX_HALF_H + GRASP_ABOVE   # 0.06+0.02+0.06 = 0.14
+        hover_z      = rest_surface + BOX_HALF_H + STACK_HOVER
+        place_z      = rest_surface + BOX_HALF_H + GRASP_ABOVE
 
         self.get_logger().info(
             f'Place arm: x={px} y={py} hover_z={hover_z:.3f} place_z={place_z:.3f}')
@@ -1364,6 +1462,16 @@ class NavPickOrchestrator(Node):
         self.back_up()
         self.get_logger().info('═══ stacking complete ═══')
 
+    def _backup_from_table(self, seconds: float):
+        """Reverse at BACKUP_VEL_X for `seconds` to clear whichever table we're at."""
+        _tw = Twist(); _tw.linear.x = BACKUP_VEL_X
+        end = time.time() + seconds
+        while time.time() < end:
+            self._cmd_vel_pub.publish(_tw)
+            rclpy.spin_once(self, timeout_sec=0.1)
+        self._cmd_vel_pub.publish(Twist())
+        time.sleep(0.3)
+
     def run(self):
         self.get_logger().info('══════════════════════════════════════════════')
         self.get_logger().info('  Nav-Pick Orchestrator — STARTING SEQUENCE   ')
@@ -1374,125 +1482,147 @@ class NavPickOrchestrator(Node):
         self._wait_for_move_group()
         self.go_named('travel')
 
-        # 1. Navigate
+        # 1. Navigate to pickup table
         if not self.navigate_to_table():
             self.get_logger().error('Navigation failed — aborting')
             return
 
-        time.sleep(0.5)   # settle
+        time.sleep(0.5)
 
-        # 1.5. Visual Docking
+        # 1.5. Visual docking
         self.visual_docking()
 
         # 2. Pin base
         self.pin_base()
-        time.sleep(1.0)   # let the pin settle before moving the arm
+        time.sleep(1.0)
 
-        # 3. Grasp-target BASE (pre-offset). Prefer the DOCK geometry (x = odometry-
-        #    measured true distance) — the close-range camera over-reads at the dock.
+        # 3. Grasp target (prefer odometry-measured dock geometry)
         base = self._dock_box if self._dock_box is not None else self.get_box_xyz()
         if base is None:
             base = FIXED_BOX
             self.get_logger().warn(f'perception fallback → FIXED_BOX {FIXED_BOX}')
 
-        # CALIBRATION MODE: loop the grasp (box auto-resets) so the offset can be tuned
-        # live with `ros2 param set` — no relaunch needed.
+        # ── CALIBRATION MODE ────────────────────────────────────────────────────
         n = self.get_parameter('calib_loops').value
         if n and n > 0:
             self.calib_loop(base, n)
             return
 
-        # STACKING MODE: pick + stack `stack_count` boxes vertically (thesis task).
+        # ── STACKING MODE (run_stack path — local stack, no nav to place table) ──
         stack_n = self.get_parameter('stack_count').value
         if stack_n and stack_n > 0:
             self.run_stack(base, stack_n)
             return
 
-        # 4+5. Grasp + Retract (single run)
+        # ── FULL PIPELINE: pick → transport → dock → place (multi-level) ────────
+        place_levels = max(1, int(self.get_parameter('place_stack_levels').value))
+
+        # Level 0: first pick (robot is already docked at pickup table)
+        self._cycle_begin(0)
         ox, oy, oz = self._offset()
         bx, by, bz = base[0] + ox, base[1] + oy, base[2] + oz
         self.get_logger().info(
             f'grasp target = {tuple(round(v, 3) for v in base)} + offset '
             f'({ox:.3f}, {oy:.3f}, {oz:.3f}) → ({bx:.3f}, {by:.3f}, {bz:.3f})')
         self.grasp_and_retract(bx, by, bz)
+        self._current_cycle['pick_success'] = self._weld_active
 
-        # 5b. If box is welded (grasp succeeded) — navigate to place table and place
-        if self._weld_active:
-            self.get_logger().info('Weld active — proceeding to place table')
-            self.unpin_base()              # MUST release pin before driving
-            self.go_named('travel')        # low-COG pose — stops pendulum oscillation during nav
-            # Back away from pickup table before Nav2 plans.
-            self.get_logger().info('Clearing pickup table — reversing 0.6 m before Nav2…')
-            _twist = Twist()
-            _twist.linear.x = BACKUP_VEL_X   # -0.15 m/s
-            _t_end = time.time() + 4.0        # 0.15 × 4.0 = 0.60 m clearance
-            while time.time() < _t_end:
-                self._cmd_vel_pub.publish(_twist)
-                rclpy.spin_once(self, timeout_sec=0.1)
-            self._cmd_vel_pub.publish(Twist())
-            time.sleep(0.3)
-            # Multi-level stacking: navigate once, dock once (latch survives the loop),
-            # then pick+place for each additional level.
-            place_levels = max(1, int(self.get_parameter('place_stack_levels').value))
-            nav_ok = self.navigate_to_place_table()   # Nav2 + map-pos dock + latch
-            self.get_logger().info(
-                f'navigate_to_place_table → {"OK  drop={self._latched_drop}" if nav_ok else "FAILED"}')
-            if nav_ok:
-                self.pin_base()
-                for lvl in range(place_levels):
-                    self.get_logger().info(f'Placing level {lvl}…')
-                    if not self.place_box(level=lvl):
-                        self.get_logger().error(f'place_box failed at level {lvl} — stopping stack')
-                        break
-                    if lvl + 1 < place_levels:
-                        # Fetch and grasp the next box for the next stack level
-                        self.get_logger().info(f'Fetching box for level {lvl + 1}…')
-                        self.unpin_base()
-                        self.go_named('travel')        # low-COG pose during navigation
-                        # Short backup to clear the place table, then go get next box
-                        _t2 = Twist(); _t2.linear.x = BACKUP_VEL_X
-                        _t_end2 = time.time() + 3.0
-                        while time.time() < _t_end2:
-                            self._cmd_vel_pub.publish(_t2)
-                            rclpy.spin_once(self, timeout_sec=0.1)
-                        self._cmd_vel_pub.publish(Twist())
-                        time.sleep(0.2)
-                        self.reset_box()
-                        time.sleep(0.7)
-                        # Re-navigate to pickup table
-                        self._activate_nav2_cmdvel()
-                        if not self.navigate_to_table():
-                            self.get_logger().error('Re-navigation to pickup failed — stopping stack')
-                            break
-                        self.visual_docking()
-                        self.pin_base()
-                        time.sleep(1.0)
-                        base2 = self._dock_box if self._dock_box else FIXED_BOX
-                        ox2, oy2, oz2 = self._offset()
-                        bx2, by2, bz2 = base2[0]+ox2, base2[1]+oy2, base2[2]+oz2
-                        self.grasp_and_retract(bx2, by2, bz2)
-                        if not self._weld_active:
-                            self.get_logger().error('Pick failed for next level — stopping stack')
-                            break
-                        # Back up and re-navigate to place table (reuses latched drop+yaw)
-                        self.unpin_base()
-                        self.go_named('travel')        # low-COG pose during navigation
-                        _t3 = Twist(); _t3.linear.x = BACKUP_VEL_X
-                        _t_end3 = time.time() + 4.0
-                        while time.time() < _t_end3:
-                            self._cmd_vel_pub.publish(_t3)
-                            rclpy.spin_once(self, timeout_sec=0.1)
-                        self._cmd_vel_pub.publish(Twist())
-                        time.sleep(0.3)
-                        if not self.navigate_to_place_table():
-                            self.get_logger().error('Re-nav to place table failed — stopping stack')
-                            break
-                        self.pin_base()
-        else:
+        if not self._weld_active:
             self.get_logger().warn('Weld not active after grasp — skipping place step')
+            self._cycle_end()
+            self.flush_metrics()
+            self.back_up()
+            return
 
-        # 6. Back up from wherever the robot stopped
+        # Transport: unpin, travel pose, clear pickup table
+        self.unpin_base()
+        self.go_named('travel')
+        self._current_cycle['transport_retained'] = True   # weld was active at departure
+        self.get_logger().info('Clearing pickup table — reversing 0.6 m before Nav2…')
+        self._backup_from_table(4.0)
+
+        # Navigate to place table and dock (first time — sets _latched_drop)
+        nav_ok = self.navigate_to_place_table()
+        result_str = f'OK  drop={self._latched_drop}' if nav_ok else 'FAILED'
+        self.get_logger().info(f'navigate_to_place_table → {result_str}')
+        self._current_cycle['dock_via_tag'] = (nav_ok and self._latched_drop is not None)
+
+        if not nav_ok:
+            self.get_logger().error('Place dock failed — aborting')
+            self._cycle_end()
+            self.flush_metrics()
+            self.back_up()
+            return
+
+        self.pin_base()
+
+        # Place + multi-level stacking loop
+        for lvl in range(place_levels):
+            self.get_logger().info(f'Placing level {lvl}…')
+            place_ok = self.place_box(level=lvl)
+            self._current_cycle['place_success'] = place_ok
+
+            # Measure where the box actually landed (for the thesis metrics)
+            expected_z = TABLE_MAP_Y * 0.0   # unused — compute from stack geometry
+            stack_top_z = 0.10 + lvl * BOX_HEIGHT + BOX_HALF_H  # world z of box centre
+            self._cycle_measure_placement(TABLE_MAP_X, TABLE_MAP_Y, stack_top_z)
+            self._cycle_end()
+
+            if not place_ok:
+                self.get_logger().error(f'place_box failed at level {lvl} — stopping stack')
+                break
+
+            if lvl + 1 >= place_levels:
+                break   # all levels done
+
+            # ── Fetch next box ───────────────────────────────────────────────
+            self._cycle_begin(lvl + 1)
+            self.get_logger().info(f'Fetching box for level {lvl + 1}…')
+            self.unpin_base()
+            self.go_named('travel')
+            self._backup_from_table(3.0)
+
+            self.reset_box()
+            time.sleep(0.7)
+
+            self._activate_nav2_cmdvel()
+            if not self.navigate_to_table():
+                self.get_logger().error('Re-navigation to pickup failed — stopping stack')
+                self._current_cycle['pick_success'] = False
+                self._cycle_end()
+                break
+
+            self.visual_docking()
+            self.pin_base()
+            time.sleep(1.0)
+
+            base2 = self._dock_box if self._dock_box else FIXED_BOX
+            ox2, oy2, oz2 = self._offset()
+            bx2, by2, bz2 = base2[0] + ox2, base2[1] + oy2, base2[2] + oz2
+            self.grasp_and_retract(bx2, by2, bz2)
+            self._current_cycle['pick_success'] = self._weld_active
+
+            if not self._weld_active:
+                self.get_logger().error('Pick failed for next level — stopping stack')
+                self._cycle_end()
+                break
+
+            self.unpin_base()
+            self.go_named('travel')
+            self._current_cycle['transport_retained'] = True
+            self._backup_from_table(4.0)
+
+            nav_ok2 = self.navigate_to_place_table()
+            self._current_cycle['dock_via_tag'] = nav_ok2 and self._latched_drop is not None
+            if not nav_ok2:
+                self.get_logger().error('Re-nav to place table failed — stopping stack')
+                self._cycle_end()
+                break
+            self.pin_base()
+
+        # 6. Back up and write metrics
         self.back_up()
+        self.flush_metrics()
 
         self.get_logger().info('══════════════════════════════════════════════')
         self.get_logger().info('  SEQUENCE COMPLETE ✓                         ')
@@ -1508,6 +1638,7 @@ def main(args=None):
         pass
     finally:
         node.unpin_base()
+        node.flush_metrics()   # write CSV even on Ctrl-C
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
