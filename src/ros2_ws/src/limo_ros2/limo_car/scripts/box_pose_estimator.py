@@ -71,6 +71,7 @@ class BoxPoseEstimator(Node):
         # Publishers
         self.pose_pub   = self.create_publisher(PoseStamped, '/box_pose', 10)
         self.marker_pub = self.create_publisher(Marker, '/box_pose_marker', 10)
+        self.debug_pub  = self.create_publisher(Image, '/box_detection_debug', 10)
 
         # Latch the last good detection in the global 'map' frame and republish it at 20 Hz,
         # transformed dynamically to base_link so the coordinate remains accurate as the robot moves.
@@ -128,40 +129,61 @@ class BoxPoseEstimator(Node):
         pt.header.stamp = rclpy.time.Time().to_msg()  # latest available transform
         pt.point.x, pt.point.y, pt.point.z = float(x), float(y), float(z)
 
-        # Transform into the global static 'map' frame.
+        # Primary path: transform through 'map' so the box can be latched as a
+        # stationary world point and republished dynamically as the robot moves.
+        # Fallback: when 'map' does not exist (e.g. running without Nav2 in a
+        # standalone test), transform directly to base_link.
+        map_ok = False
         try:
             tf = self.tf_buffer.lookup_transform(
                 'map', self._depth_frame,
                 rclpy.time.Time(), timeout=Duration(seconds=0.2))
+            pt_map = do_transform_point(pt, tf)
+            self._last_pose_map = pt_map   # latch stationary world point
+            map_ok = True
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
-                tf2_ros.ExtrapolationException) as e:
-            self.get_logger().warn(f'TF {self._depth_frame}→map unavailable: {e}',
-                                   throttle_duration_sec=3.0)
-            return
+                tf2_ros.ExtrapolationException):
+            pass   # map unavailable — use direct path below
 
-        pt_map = do_transform_point(pt, tf)
-        self._last_pose_map = pt_map   # latch stationary world point
+        if map_ok:
+            # Transform latched map point → base_link for immediate publish
+            try:
+                tf_base = self.tf_buffer.lookup_transform(
+                    TARGET_FRAME, 'map',
+                    rclpy.time.Time(), timeout=Duration(seconds=0.1))
+                pt_base = do_transform_point(self._last_pose_map, tf_base)
+            except Exception as e:
+                self.get_logger().warn(
+                    f'Failed map→base_link transform: {e}', throttle_duration_sec=3.0)
+                return
+        else:
+            # Direct path: depth_frame → base_link (no latching — works without Nav2)
+            try:
+                tf_base = self.tf_buffer.lookup_transform(
+                    TARGET_FRAME, self._depth_frame,
+                    rclpy.time.Time(), timeout=Duration(seconds=0.2))
+                pt_base = do_transform_point(pt, tf_base)
+                self.get_logger().info(
+                    'map frame unavailable — using direct depth→base_link transform',
+                    throttle_duration_sec=5.0)
+            except Exception as e:
+                self.get_logger().warn(
+                    f'TF {self._depth_frame}→{TARGET_FRAME} unavailable: {e}',
+                    throttle_duration_sec=3.0)
+                return
 
-        # Transform to base_link immediately to publish and log
-        try:
-            tf_base = self.tf_buffer.lookup_transform(
-                TARGET_FRAME, 'map',
-                rclpy.time.Time(), timeout=Duration(seconds=0.1))
-            pt_base = do_transform_point(pt_map, tf_base)
+        pose = PoseStamped()
+        pose.header.frame_id = TARGET_FRAME
+        pose.header.stamp = self.get_clock().now().to_msg()
+        pose.pose.position = pt_base.point
+        pose.pose.orientation.w = 1.0
+        self.pose_pub.publish(pose)
+        self._publish_marker(pose)
+        self._publish_debug_image(bgr, msg.header, u, v, pt_base.point)
 
-            pose = PoseStamped()
-            pose.header.frame_id = TARGET_FRAME
-            pose.header.stamp = self.get_clock().now().to_msg()
-            pose.pose.position = pt_base.point
-            pose.pose.orientation.w = 1.0   # location only; grasp orientation set by orchestrator
-            self.pose_pub.publish(pose)
-            self._publish_marker(pose)
-
-            self.get_logger().info(
-                f'box @ base_link: x={pt_base.point.x:.3f} y={pt_base.point.y:.3f} '
-                f'z={pt_base.point.z:.3f} (cam Z={z:.3f})', throttle_duration_sec=1.0)
-        except Exception as e:
-            self.get_logger().warn(f'Failed immediate base_link transform: {e}', throttle_duration_sec=3.0)
+        self.get_logger().info(
+            f'box @ base_link: x={pt_base.point.x:.3f} y={pt_base.point.y:.3f} '
+            f'z={pt_base.point.z:.3f} (cam Z={z:.3f})', throttle_duration_sec=1.0)
 
     # ── Detection helper ──────────────────────────────────────────────────────
 
@@ -198,6 +220,18 @@ class BoxPoseEstimator(Node):
         if best is None:
             return None
         return best[1], best[2], best[0]
+
+    def _publish_debug_image(self, bgr, header, u, v, pt):
+        vis = bgr.copy()
+        cv2.circle(vis, (u, v), 18, (0, 255, 0), 2)
+        cv2.drawMarker(vis, (u, v), (0, 255, 0), cv2.MARKER_CROSS, 20, 2)
+        label = f'x={pt.x:.2f} y={pt.y:.2f} z={pt.z:.2f} m'
+        cv2.putText(vis, label, (u + 22, v - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2, cv2.LINE_AA)
+        try:
+            self.debug_pub.publish(self.bridge.cv2_to_imgmsg(vis, 'bgr8'))
+        except Exception:
+            pass
 
     def _publish_latched(self):
         """Republish the last known box pose at 20 Hz, dynamically transformed from

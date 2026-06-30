@@ -74,6 +74,9 @@ install(PROGRAMS scripts/gen_apriltag.py
 install(PROGRAMS scripts/test_place_arm.py
   RENAME test_place_arm DESTINATION lib/${PROJECT_NAME})
 
+install(PROGRAMS scripts/cam_track_pick_test.py
+  RENAME cam_track_pick_test DESTINATION lib/${PROJECT_NAME})
+
 # (mecanum_bridge.py intentionally NOT installed — it was only for the abandoned
 #  mecanum/planar_move drive; the diff-drive base needs no cmd_vel/odom bridge.)
 

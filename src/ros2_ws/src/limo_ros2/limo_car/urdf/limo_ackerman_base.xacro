@@ -87,11 +87,10 @@ in externen Dateien.-->
             </geometry>
         </visual>
 
-        <!-- Modell für physikalische Kollision zu modellieren. -->
         <collision>
-            <origin xyz="0 0 -0.06" rpy="0 0 0" />
+            <origin xyz="0.0 0 -0.06" rpy="0 0 0" />
             <geometry>
-                <box size="${base_x_size} ${base_y_size} ${base_z_size}"/>
+                <box size="0.32 0.20 0.12"/>
             </geometry>
         </collision>
         <xacro:box_inertial_matrix  m="${base_mass}" w="${base_x_size}" l="${base_y_size}" h="${base_z_size}" />

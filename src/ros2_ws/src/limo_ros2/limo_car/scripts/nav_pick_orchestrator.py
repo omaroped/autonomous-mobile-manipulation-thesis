@@ -1229,50 +1229,23 @@ class NavPickOrchestrator(Node):
             self.get_logger().error('Navigation to place table failed')
             return False
 
-        self.get_logger().info('Nav2 arrived — creeping to place distance…')
+        self.get_logger().info('Nav2 arrived — docking to place table…')
         self._silence_nav2_cmdvel()
         time.sleep(0.5)
 
-        # Creep forward until TF map_y ≤ PLACE_MAP_Y_DOCK (-1.75).
-        # Nav2 stops at y≈-0.50; need to drive 1.25 m south to -1.75.
-        # At 0.08 m/s that takes ~16 s — give 35 s to be safe.
-        deadline = time.time() + 35.0
-        driven = False
-        while time.time() < deadline:
-            rclpy.spin_once(self, timeout_sec=0.1)
-            try:
-                tf = self._tf_buf.lookup_transform(
-                    'map', 'base_link', rclpy.time.Time(),
-                    timeout=Duration(seconds=0.2))
-            except Exception:
-                time.sleep(0.05)
-                continue
-            robot_y   = tf.transform.translation.y
-            remaining = robot_y - PLACE_MAP_Y_DOCK   # positive → still need to go south
-            self.get_logger().info(
-                f'creep: map_y={robot_y:.3f}  remaining={remaining:.3f}',
-                throttle_duration_sec=0.5)
-            if remaining <= 0.02:
-                driven = True
-                break
-            fwd = max(0.04, min(0.10, 0.8 * remaining))
-            cmd = Twist()
-            cmd.linear.x = fwd
-            self._cmd_vel_pub.publish(cmd)
-            time.sleep(0.05)
+        # Primary: AprilTag visual dock — aligns heading precisely regardless of
+        # Nav2 final pose, then latches drop (x,y) from the tag estimator.
+        # Fallback: map-position creep when the tag is not visible.
+        if self.dock_to_tag():
+            self.get_logger().info('Place dock complete via AprilTag ✓')
+        else:
+            self.get_logger().warn('Tag dock failed — falling back to map-position dock')
+            if not self._dock_by_map_pos():
+                self.get_logger().error('Map-position dock also failed — aborting place')
+                return False
 
-        self._cmd_vel_pub.publish(Twist())
-        time.sleep(0.5)
-
-        if not driven:
-            self.get_logger().warn(
-                'TF creep timed out — using Nav2 stopping point as-is')
-
-        # Arm target: table centre is 0.25 m ahead, centred.
-        # Hardcoded — no complex computation, matches PLACE_MAP_Y_DOCK geometry.
-        self._latched_drop    = (0.25, 0.0)
-        self._latched_tag_yaw = 0.0
-        self.get_logger().info('Place dock ready — arm target locked (0.25, 0.00)')
+        self.get_logger().info(
+            f'Place dock ready — arm target locked {self._latched_drop}')
         return True
 
     # ── Place: lower box onto table and release ───────────────────────────────
@@ -1293,8 +1266,7 @@ class NavPickOrchestrator(Node):
             self.set_gripper(GRIPPER_OPEN, 'release')
             return False
 
-        px = 0.25   # always use the hardcoded approach distance
-        py = 0.0
+        px, py = self._latched_drop if self._latched_drop is not None else (0.25, 0.0)
         q  = TOPDOWN_QUAT   # straight down, same as grasp
 
         surface_z    = float(self.get_parameter('stack_surface_z').value)
@@ -1448,7 +1420,7 @@ class NavPickOrchestrator(Node):
         if self._weld_active:
             self.get_logger().info('Weld active — proceeding to place table')
             self.unpin_base()              # MUST release pin before driving
-            self.go_named('ready')         # arm elevated (box above LiDAR scan plane)
+            self.go_named('travel')        # low-COG pose — stops pendulum oscillation during nav
             # Back away from pickup table before Nav2 plans.
             self.get_logger().info('Clearing pickup table — reversing 0.6 m before Nav2…')
             _twist = Twist()
@@ -1476,7 +1448,7 @@ class NavPickOrchestrator(Node):
                         # Fetch and grasp the next box for the next stack level
                         self.get_logger().info(f'Fetching box for level {lvl + 1}…')
                         self.unpin_base()
-                        self.go_named('ready')
+                        self.go_named('travel')        # low-COG pose during navigation
                         # Short backup to clear the place table, then go get next box
                         _t2 = Twist(); _t2.linear.x = BACKUP_VEL_X
                         _t_end2 = time.time() + 3.0
@@ -1504,7 +1476,7 @@ class NavPickOrchestrator(Node):
                             break
                         # Back up and re-navigate to place table (reuses latched drop+yaw)
                         self.unpin_base()
-                        self.go_named('ready')
+                        self.go_named('travel')        # low-COG pose during navigation
                         _t3 = Twist(); _t3.linear.x = BACKUP_VEL_X
                         _t_end3 = time.time() + 4.0
                         while time.time() < _t_end3:

@@ -201,7 +201,7 @@ die Raedern und Steuerscharnier im vorderen Achse, und auch die hinten Raedern. 
 
             <!-- Modell für physikalische Kollision zu modellieren. -->
             <collision>
-                <origin xyz="-0.06 0 -0.15" rpy="0 0 ${M_PI/2}" />
+                <origin xyz="0 0 -0.15" rpy="0 0 ${M_PI/2}" />
                 <geometry>
                     <mesh filename="package://limo_car/meshes/limo_base_collision_meters.stl" scale="1.0 1.0 1.0"/>
                 </geometry>
