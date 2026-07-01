@@ -5,7 +5,6 @@ Autonomous Mobile Manipulation: Design and Evaluation of a Pick-and-Place and Ob
 Omar Alobaid
 Supervisor: Prof. Ronny Hartanto
 Rhine-Waal University of Applied Sciences (HSRW)
-July 2026
 
 ---
 
@@ -49,23 +48,23 @@ Dynamic or deformable environments and moving obstacles or targets are not addre
 
 Total thesis period: 3 months, July 1 to October 1, 2026 (13 weeks). Phases overlap deliberately to make the most of the available time. Continuous light drafting runs throughout Phases 1–4 so that the writing phase is consolidation rather than writing from scratch.
 
-### Phase 1 — Consolidation (Weeks 1–2, Jul 1–14)
+### Phase 1 — Consolidation (Weeks 1–2)
 
 Finalise the thesis framing; complete the integrated navigate → dock → perceive → grasp → transport → place → stack cycle into a reliable, repeatable run. Freeze the simulation testbed used for all subsequent experiments. Begin literature review.
 
-### Phase 2 — Simulation Experiments (Weeks 2–6, Jul 8 – Aug 4)
+### Phase 2 — Simulation Experiments (Weeks 2–6)
 
 Execute the systematic trial campaign (N ≥ 20 per configuration), recording task success rate, placement accuracy, planning time, and cycle time. Conduct the reachability study (effect of mounting, base stop distance, and workspace layout) and the stacking-precision study. Complete literature review.
 
-### Phase 3 — Simulation-to-Reality Transfer (Weeks 5–10, Jul 29 – Sep 8)
+### Phase 3 — Simulation-to-Reality Transfer (Weeks 5–10)
 
 Set up the physical LIMO Cobot (onboard computer, drivers, arm and camera calibration), port the pipeline to hardware, and perform the real-robot trials. Compare real-world placement precision against simulation and record the engineering effort required for the transfer. This phase is contingent on hardware availability and lab access.
 
-### Phase 4 — Analysis (Weeks 9–11, Sep 1–22)
+### Phase 4 — Analysis (Weeks 9–11)
 
 Process and interpret collected data, produce figures and tables, identify dominant failure modes, and prepare results for write-up.
 
-### Phase 5 — Writing and Submission (Weeks 10–13, Sep 15 – Oct 1)
+### Phase 5 — Writing and Submission (Weeks 10–13)
 
 A three-week period reserved for writing and final revision. Complete all chapters, the discussion and conclusion, and the abstract; finalise and submit.
 
@@ -73,9 +72,9 @@ A three-week period reserved for writing and final revision. Complete all chapte
 
 ## Schedule
 
-Registration date: July 1, 2026. Target submission: October 1, 2026 (13 weeks).
+Total thesis period: 3 months, 13 weeks.
 
-| Activity | Jul 1 | Jul 8 | Jul 15 | Jul 22 | Jul 29 | Aug 5 | Aug 12 | Aug 19 | Aug 26 | Sep 2 | Sep 9 | Sep 16 | Sep 23 |
+| Activity | W1 | W2 | W3 | W4 | W5 | W6 | W7 | W8 | W9 | W10 | W11 | W12 | W13 |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | Phase 1: Consolidation | ██ | ██ | | | | | | | | | | | |
 | Literature review | ██ | ██ | ██ | ██ | ██ | ██ | | | | | | | |
@@ -88,12 +87,12 @@ Registration date: July 1, 2026. Target submission: October 1, 2026 (13 weeks).
 
 ### Milestones
 
-| Milestone | Date | Deliverable |
+| Milestone | Timing | Deliverable |
 |---|---|---|
-| M1 — Simulation data collected | Aug 4 | N ≥ 20 simulation runs complete; metrics logged |
-| M2 — Hardware trials complete | Sep 8 | Real-robot stacking trials done; comparison data logged |
-| M3 — Analysis complete | Sep 22 | All figures, tables, and failure-mode analysis ready |
-| M4 — Thesis submitted | Oct 1 | Final corrected thesis submitted |
+| M1 — Simulation data collected | End of Week 6 | N ≥ 20 simulation runs complete; metrics logged |
+| M2 — Hardware trials complete | End of Week 10 | Real-robot stacking trials done; comparison data logged |
+| M3 — Analysis complete | End of Week 11 | All figures, tables, and failure-mode analysis ready |
+| M4 — Thesis submitted | End of Week 13 | Final corrected thesis submitted |
 
 ---
 
