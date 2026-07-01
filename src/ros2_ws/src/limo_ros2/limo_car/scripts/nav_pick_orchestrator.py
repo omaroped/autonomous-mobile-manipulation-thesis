@@ -130,6 +130,7 @@ STACK_X_DEFAULT  =  0.26               # base_link x of the stack foundation (�
 STACK_Y_DEFAULT  = -0.12               # base_link y — offset to the side of the pick spot
 STACK_SURFACE_Z  =  0.06               # base_link z of the foundation surface top (table top)
 STACK_HOVER      =  0.10               # TCP hover above the current stack top before placing
+STOP_DISTANCE    =  0.24               # box distance from base_link at the pickup dock (arm reach limit)
 STACK_COUNT_DEF  =  0                  # 0 = legacy single pick+backup; N>0 = stack N boxes
 
 # ── Place table — fiducial-guided docking ─────────────────────────────────────
@@ -572,10 +573,8 @@ class NavPickOrchestrator(Node):
         # the near-clip), then drive a MEASURED distance by ODOMETRY and STOP HARD at
         # STOP_DISTANCE. This is pure geometry — it stops in front of the table every
         # time, regardless of the camera at close range.
-        STOP_DISTANCE = 0.24    # box distance from base_link at the dock. CALIBRATION KNOB:
-                                # lower = robot front closer to the table + box more reachable
-                                # (but too low climbs the table); higher = safer but arm can't
-                                # reach. 0.24 ≈ front ~3-4 cm from the table, box within reach.
+        # STOP_DISTANCE = module constant (0.24 m). Lower = closer/more reachable but risks climbing
+        # the table; higher = safer but arm can't reach. 0.24 ≈ front ~3-4 cm from table.
 
         box0 = self.get_box_xyz(samples=6, timeout=8.0)
         if box0 is not None:
@@ -1358,7 +1357,8 @@ class NavPickOrchestrator(Node):
             self.set_gripper(GRIPPER_OPEN, 'release')
             return False
 
-        px, py = self._latched_drop if self._latched_drop is not None else (0.25, 0.0)
+        px, py = self._latched_drop if self._latched_drop is not None else (0.22, 0.0)
+        px = min(px, STOP_DISTANCE)   # tag centre is 0.28 m out; arm reaches reliably to 0.24
         q  = TOPDOWN_QUAT   # straight down, same as grasp
 
         # Prefer the perception-derived table top (captured at pickup dock).
