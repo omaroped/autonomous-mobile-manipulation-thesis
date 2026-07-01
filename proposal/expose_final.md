@@ -46,7 +46,7 @@ Dynamic or deformable environments and moving obstacles or targets are not addre
 
 ## Task Planning
 
-Total thesis period: 3 months, July 1 to October 1, 2026 (13 weeks). Phases overlap deliberately to make the most of the available time. Continuous light drafting runs throughout Phases 1–4 so that the writing phase is consolidation rather than writing from scratch.
+Total thesis period: 3 months (13 weeks). Phases overlap deliberately to make the most of the available time. Continuous light drafting runs throughout Phases 1–4 so that the writing phase is consolidation rather than writing from scratch.
 
 ### Phase 1 — Consolidation (Weeks 1–2)
 
