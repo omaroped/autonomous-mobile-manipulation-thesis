@@ -1,0 +1,391 @@
+% Bachelor Thesis Exposé — FINAL (revised per supervisor feedback, July 2026)
+% Changes from v1: (1) title now includes hardware name "LIMO Cobot";
+%                  (2) Gantt redrawn for 3-month period Jul 1 – Oct 1, 2026
+%                      with more realistic experiment allocation.
+% Compile: pdflatex expose_final.tex
+
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{setspace}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{tabularx}
+\usepackage{hyperref}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{booktabs}
+\usepackage{tcolorbox}
+\usepackage{amssymb}
+\usepackage{pgfgantt}
+\usepackage{array}
+\usepackage{colortbl}
+\usepackage{multirow}
+
+% ── Colours ──────────────────────────────────────────────────────────────────
+\definecolor{primary}{RGB}{37,99,235}
+\definecolor{heading}{RGB}{30,41,59}
+\definecolor{body}{RGB}{51,65,85}
+\definecolor{accent}{RGB}{220,38,38}
+\definecolor{boxbg}{RGB}{248,250,252}
+\definecolor{border}{RGB}{226,232,240}
+\definecolor{ganttblue}{RGB}{37,99,235}
+\definecolor{ganttgrey}{RGB}{100,116,139}
+
+% ── Page style ────────────────────────────────────────────────────────────────
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0pt}
+
+% ── Section formatting ────────────────────────────────────────────────────────
+\titleformat{\section}{\Large\bfseries\color{heading}}{}{0em}{}
+    [\vspace{-0.3em}\rule{\textwidth}{1.5pt}\color{primary}]
+\titleformat{\subsection}{\large\bfseries\color{heading}}{}{0em}{}
+\titleformat{\subsubsection}{\normalsize\bfseries\color{heading}}{}{0em}{}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\begin{document}
+
+% ── Title block ───────────────────────────────────────────────────────────────
+\begin{center}
+    \vspace*{0.8cm}
+    {\Huge\bfseries\color{heading} Bachelor Thesis Expos\'{e}\par}
+    \vspace{0.6cm}
+    {\Large\bfseries\color{primary}
+        Autonomous Mobile Manipulation:\\[0.2em]
+        Design and Evaluation of a Pick-and-Place\\[0.2em]
+        and Object Stacking Pipeline on the LIMO Cobot\par}
+    \vspace{1.0cm}
+    {\large Omar Alobaid\par}
+    \vspace{0.2cm}
+    {\large Supervisor: Prof.\ Ronny Hartanto\par}
+    \vspace{0.2cm}
+    {\large Rhine-Waal University of Applied Sciences (HSRW)\par}
+    \vspace{0.2cm}
+    {\large July 2026\par}
+    \vspace*{1.2cm}
+\end{center}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Title}
+
+\begin{tcolorbox}[colback=boxbg, colframe=primary, arc=3pt, boxrule=1.5pt,
+    left=1em, right=1em, top=0.8em, bottom=0.8em]
+    \textbf{Primary Title:}\\[0.4em]
+    {\large Autonomous Mobile Manipulation: Design and Evaluation of a
+    Pick-and-Place and Object Stacking Pipeline on the LIMO Cobot}
+\end{tcolorbox}
+
+\vspace{0.4em}
+\noindent\textbf{Alternative titles:}
+\begin{itemize}[label=\textbullet, leftmargin=1.5em, itemsep=0.1em]
+    \item Autonomous Mobile Manipulation on the LIMO Cobot: Design, Evaluation, and
+          Simulation-to-Reality Transfer of a Pick-and-Place Pipeline
+    \item Autonomous Mobile Manipulation: Design and Evaluation of a Pick-and-Place
+          Pipeline on a Table-Sized Mobile Manipulator (LIMO Cobot)
+\end{itemize}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Research Question}
+
+\begin{tcolorbox}[colback=boxbg, colframe=primary, arc=3pt, boxrule=1pt,
+    left=1em, right=1em, top=1em, bottom=1em]
+How can a modular autonomous mobile-manipulation pipeline, integrating onboard
+navigation, perception, and collision-aware motion planning, be designed and evaluated
+in a ROS\,2/Gazebo simulation to perform reliable, repeatable pick-and-place and
+object-stacking tasks with a compact manipulator and gripper, and to what extent can
+it then be transferred to and validated on the physical robot?
+\end{tcolorbox}
+
+\subsection{Sub-Questions}
+
+\begin{enumerate}[label=\textbf{\arabic*.}, leftmargin=1.5em, itemsep=0.4em]
+
+    \item \textbf{Navigation.}
+    How reliably and repeatably can an autonomous mobile base position itself such that a
+    target object lies within the manipulator's reachable workspace, and to what extent
+    does base-positioning accuracy determine subsequent grasp success?
+
+    \item \textbf{Perception.}
+    How accurately and robustly can a target object's three-dimensional pose be estimated
+    from onboard RGB-D sensing and expressed in the manipulator's planning frame, and how
+    does the resulting estimation error propagate to grasp success?
+
+    \item \textbf{Manipulation and reachability.}
+    To what extent do the arm-mounting configuration, base stop distance, and workspace
+    geometry constrain the reachable workspace of a short-reach manipulator, and how can
+    collision-aware motion planning ensure that grasp and placement trajectories remain
+    safe and executable within those constraints?
+
+    \item \textbf{Stacking precision.}
+    With what precision and repeatability can objects be placed to achieve stable
+    sequential vertical stacking, and which sources of error most strongly limit stacking
+    reliability?
+
+    \item \textbf{Evaluation in simulation.}
+    What level of task performance (success rate, placement accuracy, planning time, and
+    cycle time) does the integrated pipeline achieve under repeated trials, and which
+    failure modes dominate?
+
+    \item \textbf{Simulation-to-reality transfer.}
+    To what extent does a pipeline developed in simulation transfer to the physical robot,
+    how does real-world performance compare with simulated performance, and what
+    engineering effort does the transfer entail?
+
+\end{enumerate}
+
+\newpage
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Scope and Limitations}
+
+\subsection{Scope (Delimitations)}
+\begin{itemize}[label=\checkmark, leftmargin=1.5em, itemsep=0.3em]
+    \item The thesis designs and evaluates a complete mobile-manipulation pipeline
+          covering navigation, perception, grasping, placement, and sequential stacking,
+          for a single compact mobile manipulator (AgileX LIMO Cobot).
+    \item The system is developed and primarily evaluated in physics-based simulation;
+          deployment on the physical robot is pursued as a transfer-and-validation
+          objective, contingent on hardware availability and the time available within
+          the thesis period.
+    \item The operating environment is \emph{static, planar, and structured}: a known
+          layout, known support surfaces, and a single known target object at a time.
+    \item Perception is delimited to a single, geometrically simple, colour-distinct
+          object resting on a known support surface.
+    \item Manipulation is restricted to top-down grasps of light, regularly shaped
+          objects lying within the arm's reachable workspace.
+    \item Evaluation is quantitative, based on success rate, placement accuracy, planning
+          time, and cycle time, assessed under repeated trials ($N \geq 20$).
+\end{itemize}
+
+\subsection{Limitations}
+\begin{itemize}[label=\textbullet, leftmargin=1.5em, itemsep=0.3em]
+    \item Results are established primarily in simulation; despite physics-based
+          modelling, a simulation-to-reality gap may affect real-world performance, and
+          characterising this gap is itself part of the study.
+    \item The limited reach of the manipulator ($\approx 0.28$\,m) constrains the
+          feasible workspace and the admissible placement of objects and support surfaces.
+    \item Classical colour-and-depth perception is sensitive to lighting, sensor noise,
+          and object appearance; robustness under uncontrolled conditions is not claimed.
+    \item Achievable stacking precision is bounded by the combined error of base
+          positioning, perception, and end-effector alignment.
+    \item Physical-hardware validation depends on platform availability, calibration, and
+          the time remaining within the thesis period.
+\end{itemize}
+
+\subsection{Out of Scope}
+\begin{tcolorbox}[colback=boxbg, colframe=accent, arc=3pt, boxrule=1pt,
+    left=1em, right=1em, top=0.5em, bottom=0.5em]
+    \begin{itemize}[label=\textbullet, leftmargin=1em, topsep=0.2em, itemsep=0.2em]
+        \item Dynamic or deformable environments and moving obstacles/targets.
+        \item Cluttered or multi-object scenes and general object recognition.
+        \item Learning-based perception and learned manipulation policies.
+        \item Multi-robot coordination.
+        \item Online map-building (SLAM) during execution; a known map and layout are
+              assumed.
+    \end{itemize}
+\end{tcolorbox}
+
+\newpage
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Task Planning}
+
+\textbf{Total thesis period: 3 months — July 1 to October 1, 2026 (13 weeks).}
+Phases overlap deliberately to make the most of the available time.
+Continuous light drafting runs throughout Phases 1–4 so that the writing phase
+is consolidation rather than writing from scratch.
+
+\vspace{0.5em}
+
+\noindent\textbf{Phase 1 — Consolidation (Weeks 1–2, Jul 1–14)}\\
+Finalise the thesis framing; complete the integrated
+navigate $\to$ dock $\to$ perceive $\to$ grasp $\to$ transport $\to$ place $\to$ stack
+cycle into a reliable, repeatable run. Freeze the simulation testbed used for all
+subsequent experiments. Begin literature review.
+
+\vspace{0.5em}
+
+\noindent\textbf{Phase 2 — Simulation Experiments (Weeks 2–6, Jul 8 – Aug 4)}\\
+Execute the systematic trial campaign ($N \geq 20$ per configuration), recording task
+success rate, placement accuracy, planning time, and cycle time.
+Conduct the reachability study (effect of mounting, base stop distance, and workspace
+layout) and the stacking-precision study. Complete literature review (Chapter\,2).
+
+\vspace{0.5em}
+
+\noindent\textbf{Phase 3 — Simulation-to-Reality Transfer (Weeks 5–10, Jul 29 – Sep 8, contingent)}\\
+Set up the physical LIMO Cobot (onboard computer, drivers, arm and camera calibration),
+port the pipeline to hardware, and perform the real-robot trials.
+Compare real-world placement precision against simulation and record the engineering
+effort required for the transfer.
+\textit{Contingent on hardware availability and lab access.}
+
+\vspace{0.5em}
+
+\noindent\textbf{Phase 4 — Analysis (Weeks 9–11, Sep 1–22)}\\
+Process and interpret collected data, produce figures and tables, identify dominant
+failure modes, and prepare results for write-up.
+
+\vspace{0.5em}
+
+\noindent\textbf{Phase 5 — Dedicated Writing \& Submission (Weeks 10–13, Sep 15 – Oct 1)}\\
+A three-week period reserved for writing and final revision.
+Complete all chapters, the discussion and conclusion, and the abstract;
+finalise and submit.
+
+\newpage
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Gantt Chart}
+
+\textbf{Registration date: July 1, 2026 \quad Target submission: October 1, 2026
+(13 weeks)}
+
+\vspace{1em}
+
+\begin{center}
+\begin{ganttchart}[
+    hgrid,
+    vgrid={*6{draw=none}, dotted},
+    x unit=0.72cm,
+    y unit title=0.6cm,
+    y unit chart=0.65cm,
+    title label font=\scriptsize,
+    bar label font=\small,
+    group label font=\small\bfseries,
+    milestone label font=\small\itshape,
+    bar/.append style={fill=ganttblue!60, rounded corners=1pt},
+    bar incomplete/.append style={fill=ganttgrey!30},
+    milestone/.append style={fill=accent, shape=diamond, inner sep=1.5pt},
+    group/.append style={fill=ganttblue!20, draw=ganttblue},
+    title/.append style={fill=boxbg},
+    canvas/.append style={draw=border},
+    today=1,
+    today rule/.style={draw=accent, thick, dashed},
+    today label=\scriptsize Today
+]{1}{13}
+
+    % ── Column headers (week numbers / approximate months) ──────────────────
+    \gantttitle{Jul}{4}
+    \gantttitle{Aug}{4}
+    \gantttitle{Sep}{4}
+    \gantttitle{Oct}{1} \\
+    \gantttitlelist{1,...,13}{1} \\
+
+    % ── Phase 1 ─────────────────────────────────────────────────────────────
+    \ganttgroup{Phase 1 — Consolidation}{1}{2} \\
+    \ganttbar{Freeze simulation testbed}{1}{2} \\
+    \ganttbar{Literature review (begin)}{1}{2} \\
+
+    % ── Phase 2 ─────────────────────────────────────────────────────────────
+    \ganttgroup{Phase 2 — Simulation Experiments}{2}{6} \\
+    \ganttbar{N\,$\geq$\,20 trial campaign}{2}{5} \\
+    \ganttbar{Reachability \& stacking study}{4}{6} \\
+    \ganttbar{Literature review (complete)}{3}{6} \\
+    \ganttmilestone{M1 — Sim data collected}{6} \\
+
+    % ── Phase 3 ─────────────────────────────────────────────────────────────
+    \ganttgroup{Phase 3 — Sim-to-Real (contingent)}{5}{10} \\
+    \ganttbar{Hardware setup \& calibration}{5}{7} \\
+    \ganttbar{Real-robot trials}{7}{10} \\
+    \ganttmilestone{M2 — Hardware trials done}{10} \\
+
+    % ── Phase 4 ─────────────────────────────────────────────────────────────
+    \ganttgroup{Phase 4 — Analysis}{9}{11} \\
+    \ganttbar{Data processing \& figures}{9}{11} \\
+    \ganttmilestone{M3 — Analysis complete}{11} \\
+
+    % ── Phase 5 ─────────────────────────────────────────────────────────────
+    \ganttgroup{Phase 5 — Writing \& Submission}{10}{13} \\
+    \ganttbar{Chapters \& discussion}{10}{12} \\
+    \ganttbar{Revision \& final checks}{12}{13} \\
+    \ganttmilestone{M4 — Thesis submitted}{13}
+
+\end{ganttchart}
+\end{center}
+
+\vspace{0.8em}
+
+\subsection{Milestones}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabularx}{\textwidth}{l c X}
+\toprule
+\textbf{Milestone} & \textbf{Target Date} & \textbf{Deliverable} \\
+\midrule
+M1 — Sim data collected   & Aug 4  & $N\geq 20$ simulation runs complete; CSV data logged. \\
+M2 — Hardware trials done & Sep 8  & Real-robot stacking trials complete; comparison data logged. \\
+M3 — Analysis complete    & Sep 22 & All figures, tables, and failure-mode analysis ready. \\
+M4 — Thesis submitted     & Oct 1  & Final corrected thesis submitted. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\newpage
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Overview}
+
+Mobile manipulation brings together two abilities that are normally studied apart:
+moving through an environment and handling the objects in it.
+A mobile manipulator is a wheeled base with a robotic arm, so one robot can drive to
+an object, pick it up, carry it, and put it down.
+The idea is well established and has been demonstrated on many research platforms over
+the years~\cite{masannek2026eaiws}.
+Making it work reliably on a small, low-cost robot is still demanding, because the base
+and the arm have to be coordinated precisely for each task to succeed.
+
+This thesis designs a complete pipeline for such a robot and studies how well it picks
+objects up, places them, and stacks them.
+The robot drives to a target, finds it with an onboard camera~\cite{chaumette2006visual},
+plans a safe grasp around the surfaces near it, picks the object up, carries it, and
+places it where it should go.
+By repeating this cycle and setting each object on top of the last, the robot builds a
+stack.
+Stacking is the most demanding goal of the three, because the objects have to be placed
+precisely enough to rest stably on one another, so it sets the standard the rest of the
+pipeline has to meet.
+The work is done first in simulation and then, as far as time and hardware allow, on
+the real robot.
+The methods are kept simple and transparent rather than learning-based, so the system
+is easy to follow and to transfer to hardware.
+Performance is judged by how often the task succeeds, how accurately objects are
+placed, and how long planning and each full cycle take.
+Comparing the simulated behaviour with the behaviour on the real robot is itself one of
+the things the thesis sets out to measure.
+
+\subsection{Platform Architecture}
+
+The mobile manipulator platform combines an \textbf{AgileX LIMO} differential-drive
+base with an \textbf{Elephant Robotics myCobot 280} 6-DoF arm (the LIMO Cobot
+configuration).
+The base provides autonomous navigation capabilities, while the arm extends
+approximately 280\,mm with a payload capacity of 250\,g.
+An adaptive parallel-jaw gripper is mounted at the end-effector, and an RGB-D camera
+provides visual perception.
+The entire system operates under \textbf{ROS\,2 Humble} with \textbf{Gazebo Classic}
+as the simulation environment, enabling physics-based testing before hardware
+deployment.
+This compact configuration represents a low-cost platform for mobile manipulation
+research, with the arm's limited reach creating stringent requirements for base
+positioning accuracy.
+
+\section{References}
+
+\begin{itemize}[label=\textbullet, leftmargin=1.5em]
+    \item Macenski, S.\ and Jambrecic, I., ``SLAM Toolbox: SLAM for the Dynamic World,''
+          \textit{Journal of Open Source Software}, 2021.
+    \item Macenski, S.\ et al., ``The Marathon 2: A Navigation System,'' \textit{IROS}, 2020.
+    \item Masannek, M.\ et al., ``Embodied Autonomous Intelligence for On-Demand
+          Manufacturing,'' EAI-WS Proposal, 2026.
+    \item Chaumette, F.\ and Hutchinson, S., ``Visual Servo Control, Part I: Basic
+          Approaches,'' \textit{IEEE Robotics \& Automation Magazine}, 2006.
+\end{itemize}
+
+\end{document}
