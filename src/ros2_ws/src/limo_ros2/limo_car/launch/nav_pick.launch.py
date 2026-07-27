@@ -37,6 +37,9 @@ def generate_launch_description():
     use_gzclient = LaunchConfiguration('use_gzclient', default='true')
     drive_mode = LaunchConfiguration('drive_mode', default='diff')
     calib_loops = LaunchConfiguration('calib_loops', default='0')
+    place_stack_levels = LaunchConfiguration('place_stack_levels', default='1')
+    dock_range = LaunchConfiguration('dock_range', default='0.15')
+    metrics_csv = LaunchConfiguration('metrics_csv', default='')
 
     # ── Argument declarations ─────────────────────────────────────────────────
     spawn_y_arg = DeclareLaunchArgument(
@@ -60,6 +63,20 @@ def generate_launch_description():
         description='0 = run once (normal demo). N>0 = calibration mode: after docking, '
                     'repeat the grasp N times, auto-resetting the box, reading grasp_off_* '
                     'params live each iteration so the offset can be tuned without relaunching.')
+
+    place_stack_levels_arg = DeclareLaunchArgument(
+        'place_stack_levels', default_value='1',
+        description='Number of boxes to pick+stack at the place table in one run '
+                    '(the world has 3 distinct stack_box_N boxes on the pickup table).')
+
+    dock_range_arg = DeclareLaunchArgument(
+        'dock_range', default_value='0.15',
+        description='AprilTag dock stop distance (m) — tuned so latched drop-x '
+                    '(dock_range + table_side/2) lands within arm reach (STOP_DISTANCE).')
+
+    metrics_csv_arg = DeclareLaunchArgument(
+        'metrics_csv', default_value='',
+        description='Path for the per-cycle metrics CSV. Empty = auto-name under data/.')
 
     # ── 1. Gazebo + robot + controllers ──────────────────────────────────────
     gazebo = IncludeLaunchDescription(
@@ -118,7 +135,7 @@ def generate_launch_description():
             output='screen',
             parameters=[{
                 'use_sim_time': True,
-                'tag_size': 0.08,       # tag face width in metres
+                'tag_size': 0.08125,    # printed marker size: 416/512 px of a 0.10 m plate
                 'table_side': 0.18,     # square table side length in metres
                 'table_top_z': 0.10,    # table top height above ground in metres
             }])])
@@ -155,7 +172,10 @@ def generate_launch_description():
             name='nav_pick_orchestrator',
             output='screen',
             parameters=[{'use_sim_time': True,
-                          'calib_loops': ParameterValue(calib_loops, value_type=int)}])])
+                          'calib_loops': ParameterValue(calib_loops, value_type=int),
+                          'place_stack_levels': ParameterValue(place_stack_levels, value_type=int),
+                          'dock_range': ParameterValue(dock_range, value_type=float),
+                          'metrics_csv': metrics_csv}])])
 
     return LaunchDescription([
         spawn_y_arg,
@@ -163,6 +183,9 @@ def generate_launch_description():
         use_gzclient_arg,
         drive_mode_arg,
         calib_loops_arg,
+        place_stack_levels_arg,
+        dock_range_arg,
+        metrics_csv_arg,
         gazebo,
         moveit_launch,
         nav2_launch,

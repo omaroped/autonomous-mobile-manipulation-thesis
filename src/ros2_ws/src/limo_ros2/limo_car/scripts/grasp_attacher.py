@@ -48,7 +48,7 @@ class GraspAttacher(Node):
         self._attached = False
         self._off = None          # box_pos - gripper_pos at attach (world)
         self._box_quat = None      # box orientation to keep while carried
-        self._box_name = None      # dynamically detected box name (target_box or grasp_test_box)
+        self._box_name = None      # dynamically detected box name (stack_box_0/1/2, target_box, or grasp_test_box)
         self.create_subscription(Bool, '/grasp_attach', self._cb, 10)
 
     def _cb(self, msg: Bool):
@@ -111,7 +111,7 @@ class GraspAttacher(Node):
     def tick(self):
         if self._want and not self._attached:
             if self._box_name is None:
-                for b_name in ['target_box', 'grasp_test_box']:
+                for b_name in ['stack_box_0', 'stack_box_1', 'stack_box_2', 'target_box', 'grasp_test_box']:
                     p = self._get_world(b_name)
                     if p is not None:
                         self._box_name = b_name

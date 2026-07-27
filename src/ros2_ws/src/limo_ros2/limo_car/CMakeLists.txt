@@ -57,6 +57,8 @@ install(PROGRAMS scripts/place_only_test.py
   RENAME place_only_test DESTINATION lib/${PROJECT_NAME})
 install(PROGRAMS scripts/smart_grasp.py
   RENAME smart_grasp DESTINATION lib/${PROJECT_NAME})
+install(PROGRAMS scripts/calibrate_contact_angle.py
+  RENAME calibrate_contact_angle DESTINATION lib/${PROJECT_NAME})
 install(PROGRAMS scripts/calib_pick.py
   RENAME calib_pick DESTINATION lib/${PROJECT_NAME})
 install(PROGRAMS scripts/place_scenario.py
@@ -70,6 +72,9 @@ install(PROGRAMS scripts/ik_place_check.py
 # gen_apriltag.py is a one-shot generator (run once, not a ROS node)
 install(PROGRAMS scripts/gen_apriltag.py
   RENAME gen_apriltag DESTINATION lib/${PROJECT_NAME})
+# gen_stack_box.py is a one-shot mesh generator (run once, not a ROS node)
+install(PROGRAMS scripts/gen_stack_box.py
+  RENAME gen_stack_box DESTINATION lib/${PROJECT_NAME})
 
 install(PROGRAMS scripts/test_place_arm.py
   RENAME test_place_arm DESTINATION lib/${PROJECT_NAME})

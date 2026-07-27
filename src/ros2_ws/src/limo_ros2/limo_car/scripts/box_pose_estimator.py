@@ -60,6 +60,12 @@ class BoxPoseEstimator(Node):
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
+        # Target-selection policy among multiple visible boxes — live-switchable, no
+        # relaunch needed: `ros2 param set /box_pose_estimator target_policy rightmost`
+        #   'nearest'   — closest box by camera depth (original behaviour, default)
+        #   'rightmost' — deterministic rightmost-first ordering in base_link
+        self.declare_parameter('target_policy', 'nearest')
+
         # Subscribers
         self.create_subscription(CameraInfo, '/depth_camera/depth/camera_info',
                                  self._caminfo_cb, 10)
@@ -115,11 +121,53 @@ class BoxPoseEstimator(Node):
                 throttle_duration_sec=5.0)
             return
 
-        uv = self._detect_box_pixel(bgr, depth, h, w)
-        if uv is None:
+        candidates = self._detect_box_pixels(bgr, depth, h, w)
+        if not candidates:
             self.get_logger().info('No blue box visible.', throttle_duration_sec=3.0)
             return
-        u, v, z = uv
+
+        # Multiple boxes may be visible at once (the 3-box stacking pickup table).
+        # target_policy selects how to pick among them — see the param declaration above.
+        policy = self.get_parameter('target_policy').value
+
+        if policy == 'rightmost' and len(candidates) > 1:
+            # Deterministic rightmost-first ordering in the robot's own frame (most
+            # negative base_link y). As boxes are consumed one at a time, whichever
+            # remain naturally present a new "rightmost" each cycle, so no cycle-count
+            # tracking is needed here.
+            try:
+                tf_select = self.tf_buffer.lookup_transform(
+                    TARGET_FRAME, self._depth_frame,
+                    rclpy.time.Time(), timeout=Duration(seconds=0.2))
+            except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
+                    tf2_ros.ExtrapolationException) as e:
+                self.get_logger().warn(
+                    f'TF {self._depth_frame}→{TARGET_FRAME} unavailable for target selection: {e}',
+                    throttle_duration_sec=3.0)
+                return
+
+            best = None  # (base_link_y, u, v, z)
+            for (cu, cv_, cz) in candidates:
+                cx = (cu - self._cx) * cz / self._fx
+                cy = (cv_ - self._cy) * cz / self._fy
+                cpt = PointStamped()
+                cpt.header.frame_id = self._depth_frame
+                cpt.header.stamp = rclpy.time.Time().to_msg()
+                cpt.point.x, cpt.point.y, cpt.point.z = float(cx), float(cy), float(cz)
+                cpt_base = do_transform_point(cpt, tf_select)
+                if best is None or cpt_base.point.y < best[0]:
+                    best = (cpt_base.point.y, cu, cv_, cz)
+            self.get_logger().info(
+                f'{len(candidates)} boxes visible — targeting rightmost (base_link y={best[0]:.3f})',
+                throttle_duration_sec=1.0)
+            _, u, v, z = best
+        else:
+            # 'nearest' policy (default) — closest box by camera depth, original behaviour.
+            u, v, z = min(candidates, key=lambda c: c[2])
+            if len(candidates) > 1:
+                self.get_logger().info(
+                    f'{len(candidates)} boxes visible — targeting nearest (z={z:.3f})',
+                    throttle_duration_sec=1.0)
 
         # Deproject pixel + depth → 3D point in the camera optical frame (REP 103).
         x = (u - self._cx) * z / self._fx
@@ -187,8 +235,10 @@ class BoxPoseEstimator(Node):
 
     # ── Detection helper ──────────────────────────────────────────────────────
 
-    def _detect_box_pixel(self, bgr, depth, h, w):
-        """Return (u, v, median_depth) of the closest blue blob, or None."""
+    def _detect_box_pixels(self, bgr, depth, h, w):
+        """Return a list of (u, v, median_depth) for every valid blue blob — not just
+        the nearest. Selection among candidates (e.g. rightmost-first ordering) is done
+        by the caller in base_link, not here in pixel/depth space."""
         hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
         mask = cv2.inRange(hsv, BLUE_HSV_LO, BLUE_HSV_HI)
         kernel = np.ones((5, 5), np.uint8)
@@ -196,7 +246,7 @@ class BoxPoseEstimator(Node):
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
 
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        best = None  # (z, u, v)
+        candidates = []
         for c in contours:
             if cv2.contourArea(c) < MIN_CONTOUR_AREA:
                 continue
@@ -215,11 +265,8 @@ class BoxPoseEstimator(Node):
                             depths.append(d)
             if depths:
                 z = float(np.median(depths))
-                if best is None or z < best[0]:
-                    best = (z, u, v)
-        if best is None:
-            return None
-        return best[1], best[2], best[0]
+                candidates.append((u, v, z))
+        return candidates
 
     def _publish_debug_image(self, bgr, header, u, v, pt):
         vis = bgr.copy()

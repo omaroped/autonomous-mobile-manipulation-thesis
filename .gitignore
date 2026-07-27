@@ -169,3 +169,4 @@ src/notebooks/
 src/scripts/
 src/ros2_ws/src/mycobot_ros2/
 src/ros2_ws/src/gazebo_ros2_control/
+src/ros2_ws/.mcp.json

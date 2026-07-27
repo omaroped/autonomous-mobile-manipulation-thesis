@@ -60,7 +60,14 @@ from gazebo_msgs.msg import EntityState
 from lifecycle_msgs.srv import ChangeState
 from lifecycle_msgs.msg import Transition
 
+from sensor_msgs.msg import JointState
 from tf2_ros import Buffer, TransformListener
+
+
+class GraspResult:
+    GRASPED    = 'grasped'      # stall at BOX_CONTACT_ANGLE ± APERTURE_TOL → weld fires
+    AIR        = 'air'          # swept to full close with no stall → nothing in fingers
+    OBSTRUCTED = 'obstructed'   # stall before BOX_CONTACT_ANGLE → finger on top/rim
 
 
 # ── Navigation goal ───────────────────────────────────────────────────────────
@@ -83,15 +90,28 @@ GRIPPER_OPEN  = [ 0.15,  0.15, -0.15, -0.15, -0.15,  0.15]
 GRIPPER_GRASP = [-0.20, -0.20,  0.20,  0.20,  0.20, -0.20]   # gentle partial close
 GRIPPER_TOPIC = '/mycobot_gripper_controller/commands'
 
-# Angle at which we fire the weld directly if smart_grasp hasn't triggered.
-# Estimated from box geometry: 35 mm box, finger gap at open=43.4 mm, at grasp=31.8 mm.
-# Linear interpolation: contact at θ ≈ -0.10 rad.  Fire at -0.10 so fingers are
-# just touching the box when the weld attaches — no force overshoot.
-WELD_FALLBACK_ANGLE = -0.10
+# Sim "weld" attaches the box rigidly to the gripper (a Gazebo grasp aid). True for sim;
+# set False to test whether the gripper physically holds the box (real-hardware mode).
+USE_WELD = True
 
-# Sim "weld" attaches the box rigidly to the gripper (a Gazebo grasp aid). Set False to
-# test whether the gripper physically holds the box on its own (real-grip test).
-USE_WELD = False  # real physics grasp — no artificial attachment
+# ── Aperture-based contact detection ─────────────────────────────────────────
+# BOX_CONTACT_ANGLE: run calibrate_contact_angle.py with the box at the grasp pose to
+# measure the median stall angle, then paste the result here.  The old
+# WELD_FALLBACK_ANGLE (-0.10) was an uncalibrated proxy for this same constant.
+BOX_CONTACT_ANGLE = -0.11    # rad — placeholder; run calibrate_contact_angle.py
+APERTURE_TOL      = 0.025    # ±rad band: stall within this of contact → GRASPED
+# LAG_THRESH/STALL_STEPS were tuned to stop the instant EITHER finger touches — but
+# only one side (gripper_controller, the left reference joint) is actually monitored,
+# and the real gripper has a single motor driving both sides symmetrically anyway.
+# With a light, freely-sliding box, a finger touching first should be allowed to push
+# the box sideways rather than halting the whole close — only a real, sustained
+# both-sides-blocked stall should count. Loosened accordingly (2026-07-26): more lag
+# tolerated, and it must persist much longer before being accepted as a real stall.
+LAG_THRESH        = 0.08     # rad: actual lags commanded by this → stall onset (was 0.03)
+STALL_STEPS       = 10       # consecutive stall detections to confirm (was 3, ~0.24s → ~0.8s)
+CLOSE_STEP_RAD    = 0.005    # rad per step (same as legacy)
+CLOSE_STEP_SEC    = 0.08     # s per step (same as legacy)
+MAX_GRASP_RETRIES = 2        # retry descents before aborting the pick
 
 # ── MoveIt frames / group ─────────────────────────────────────────────────────
 PLANNING_FRAME = 'base_link'
@@ -144,7 +164,10 @@ NAV_PLACE_Y    = -0.50       # Nav2 goal well away from table inflation zone.
 NAV_PLACE_YAW  = -1.5708    # -π/2: robot faces -Y (toward the table face)
 
 # Closed-loop dock parameters (dock_to_tag)
-PLACE_DOCK_RANGE   = 0.19   # stop when tag is this far from base_link (m)
+# dock_range + table_side/2 (0.09 m) must land <= STOP_DISTANCE (0.24 m) so the
+# arm reaches the true table centre without the px=min(px, STOP_DISTANCE) clamp
+# in place_box() silently shifting the drop point off-centre. 0.15+0.09=0.24 exactly.
+PLACE_DOCK_RANGE   = 0.15   # stop when tag is this far from base_link (m)
 # Map-pos approach: drive until map_y ≤ this value.
 # Table centre at map (-4,-2).  Want table at x≈0.25 in base_link.
 # Robot at map_y = -2.0 + 0.25 = -1.75  →  PLACE_MAP_Y_DOCK = -1.75
@@ -195,9 +218,15 @@ class NavPickOrchestrator(Node):
         # Gripper
         self._gripper      = self.create_publisher(Float64MultiArray, GRIPPER_TOPIC, 10)
         self._attach_pub   = self.create_publisher(Bool, '/grasp_attach', 10)
-        self._last_gripper = [0.0] * 6
-        self._weld_active  = False
+        self._last_gripper   = [0.0] * 6
+        self._weld_active    = False
+        self._gripper_actual = GRIPPER_OPEN[0]   # actual position from /joint_states
+        self._bumper_contact = False              # bumper oracle from smart_grasp
         self.create_subscription(Bool, '/grasp_attach', self._weld_cb, 10)
+        self.create_subscription(JointState, '/joint_states',
+                                 self._gripper_joint_cb, 10)
+        self.create_subscription(Bool, '/grasp_bumper_contact',
+                                 self._bumper_cb, 10)
 
         # Perception
         self._latest_box = None
@@ -221,7 +250,10 @@ class NavPickOrchestrator(Node):
         self.declare_parameter('grasp_off_z', GRASP_OFFSET[2])
         self.declare_parameter('calib_loops', 0)     # 0 = normal single run; N = repeat the grasp N times
         self.declare_parameter('calib_pause', 6.0)   # seconds to observe between iterations
-        self.declare_parameter('box_name', 'target_box')
+        # 'target_box' no longer exists — the world now has 3 distinct stack_box_N
+        # boxes. stack_box_1 sits exactly at the box_reset_xyz default below, so
+        # calib_loop()/run_stack()'s reset_box() has a real entity to respawn.
+        self.declare_parameter('box_name', 'stack_box_1')
         self.declare_parameter('box_reset_xyz', [-2.0, 4.0, 0.12])  # where to respawn the box each iter
 
         # ── Stacking knobs (live, tune with `ros2 param set` — NO relaunch) ──────
@@ -289,6 +321,7 @@ class NavPickOrchestrator(Node):
         self._cycle_start = time.time()
         self._current_cycle = {
             'cycle':              cycle_idx,
+            'box_name':           None,
             'pick_success':       False,
             'transport_retained': False,
             'dock_via_tag':       False,
@@ -299,12 +332,41 @@ class NavPickOrchestrator(Node):
             'cycle_time_s':       float('nan'),
         }
 
+    def _claim_held_box(self):
+        """Identify which box in self._remaining_boxes is currently held (elevated
+        well above the pickup-table rest height, e.g. after go_named('home')), and
+        remove it from the remaining list. Distinct boxes replace the old single
+        recycled target_box, so we must track which physical box was actually
+        grasped for correct per-box metrics. Falls back to popping the first
+        remaining name if the Gazebo query is unavailable or inconclusive."""
+        HELD_Z_THRESH = 0.16   # table-rest z=0.12; a held/retracted box reads much higher
+        best_name, best_z = None, -1.0
+        for name in self._remaining_boxes:
+            if not self._get_state.service_is_ready():
+                continue
+            req = GetEntityState.Request()
+            req.name = name
+            req.reference_frame = 'world'
+            fut = self._get_state.call_async(req)
+            rclpy.spin_until_future_complete(self, fut, timeout_sec=2.0)
+            if fut.done() and fut.result() is not None and fut.result().success:
+                z = fut.result().state.pose.position.z
+                if z > best_z:
+                    best_name, best_z = name, z
+        if best_name is None or best_z < HELD_Z_THRESH:
+            held = self._remaining_boxes.pop(0)
+            self.get_logger().warn(f'_claim_held_box: inconclusive query — assuming {held}')
+            return held
+        self._remaining_boxes.remove(best_name)
+        self.get_logger().info(f'_claim_held_box: identified held box = {best_name} (z={best_z:.3f})')
+        return best_name
+
     def _cycle_measure_placement(self, expected_x: float, expected_y: float,
-                                 expected_z: float):
+                                 expected_z: float, box_name: str = None):
         """Query Gazebo for the actual box position and record XYZ error."""
         if not self._get_state.service_is_ready():
             return
-        name = self.get_parameter('box_name').value
+        name = box_name if box_name is not None else self.get_parameter('box_name').value
         req = GetEntityState.Request()
         req.name = name
         req.reference_frame = 'world'
@@ -700,6 +762,16 @@ class NavPickOrchestrator(Node):
     def _weld_cb(self, msg: Bool):
         self._weld_active = msg.data
 
+    def _gripper_joint_cb(self, msg: JointState):
+        try:
+            idx = msg.name.index('gripper_controller')
+            self._gripper_actual = msg.position[idx]
+        except ValueError:
+            pass
+
+    def _bumper_cb(self, msg: Bool):
+        self._bumper_contact = msg.data
+
     def set_gripper(self, values, label, duration=0.8, steps=20):
         start = self._last_gripper
         for i in range(1, steps + 1):
@@ -714,72 +786,120 @@ class NavPickOrchestrator(Node):
         time.sleep(0.3)
 
     def close_until_contact(self):
-        """Close one step at a time; stop the instant smart_grasp fires the weld.
+        """Step-close the gripper; classify the stall via the calibrated aperture band.
 
-        Prevents the ODE "explosion" (box launching sideways) that happens when a
-        fixed closing angle keeps building contact force after the box is gripped.
-        Also works for any object size — large objects stop the fingers early,
-        small objects allow fingers to close further, no code change needed.
+        Two detection paths:
+          PATH A — joint tracking (real hardware): aperture detection.
+            Once the gripper joint has moved ≥ 3×CLOSE_STEP_RAD from its
+            starting position, we trust /joint_states and check lag vs cmd.
+          PATH B — joint frozen (Gazebo sim): cmd-based weld trigger.
+            In Gazebo Classic the JointGroupPositionController sends position
+            commands but the ODE joint position often does not change in
+            /joint_states.  When actual never moves the lag check fires a false
+            OBSTRUCTED immediately.  Fallback: step cmd to BOX_CONTACT_ANGLE
+            and trigger there — same logic as the old WELD_FALLBACK_ANGLE=-0.10
+            but now using the calibrated contact threshold.
 
-        Safety floor: never closes past GRIPPER_GRASP even without contact.
+        Returns a GraspResult string:
+          GRASPED    — stall at BOX_CONTACT_ANGLE ± APERTURE_TOL → weld fired
+          AIR        — swept to full close with no stall (nothing between fingers)
+          OBSTRUCTED — stall before BOX_CONTACT_ANGLE (finger on top face/rim)
         """
-        self._weld_active = False   # clear stale state before the new attempt
+        self._weld_active = False
+        cmd     = self._last_gripper[0]
+        floor   = GRIPPER_GRASP[0]    # -0.20 rad hard limit
+        lag_run = 0
+        stall_angle = None
 
-        j0    = self._last_gripper[0]
-        floor = GRIPPER_GRASP[0]    # -0.20 rad hard limit
+        # Capture actual BEFORE the loop — needed to decide which path we're on.
+        rclpy.spin_once(self, timeout_sec=0.05)
+        start_actual    = self._gripper_actual
+        gripper_tracking = False              # True once joint moves ≥ TRACKING_RAD
+        TRACKING_RAD     = 3 * CLOSE_STEP_RAD  # 0.015 rad
 
-        step_rad = 0.005            # 0.5 deg per tick — very smooth
-        step_sec = 0.08             # 80 ms per tick
-
-        steps_taken = 0
-        while j0 > floor:
-            j0 = max(floor, j0 - step_rad)
-            t  = (GRIPPER_OPEN[0] - j0) / (GRIPPER_OPEN[0] - GRIPPER_GRASP[0])
-
-            cmd = Float64MultiArray()
-            cmd.data = [float(o + t * (c - o))
+        while cmd > floor:
+            cmd = max(floor, cmd - CLOSE_STEP_RAD)
+            t   = (GRIPPER_OPEN[0] - cmd) / (GRIPPER_OPEN[0] - GRIPPER_GRASP[0])
+            msg = Float64MultiArray()
+            msg.data = [float(o + t * (c - o))
                         for o, c in zip(GRIPPER_OPEN, GRIPPER_GRASP)]
-            self._gripper.publish(cmd)
-            self._last_gripper = cmd.data[:]
-            steps_taken += 1
+            self._gripper.publish(msg)
+            self._last_gripper = msg.data[:]
 
-            rclpy.spin_once(self, timeout_sec=step_sec)
+            rclpy.spin_once(self, timeout_sec=CLOSE_STEP_SEC)
 
+            # smart_grasp (bumper or joint-error) fired the weld
             if self._weld_active:
+                stall_angle = self._gripper_actual
                 self.get_logger().info(
-                    f'[close] smart_grasp weld at j0={j0:.3f} rad  '
-                    f'({steps_taken * step_sec:.1f} s)  HOLDING')
+                    f'[close] smart_grasp weld  actual={stall_angle:.3f}')
                 break
 
-            # Fallback: if smart_grasp hasn't fired by the estimated contact angle,
-            # fire the weld directly.  Prevents the box from sliding away while waiting
-            # for a contact sensor that may not detect the collision.
-            if j0 <= WELD_FALLBACK_ANGLE and not self._weld_active:
+            actual = self._gripper_actual
+
+            if not gripper_tracking and abs(actual - start_actual) >= TRACKING_RAD:
+                gripper_tracking = True
                 self.get_logger().info(
-                    f'[close] weld FALLBACK at j0={j0:.3f} rad '
-                    f'(smart_grasp silent — firing directly)')
-                self.attach(True)
-                break
+                    f'[close] joint tracking confirmed  actual={actual:.3f}')
+
+            if gripper_tracking:
+                # PATH A — aperture detection
+                lag = actual - cmd
+                if lag > LAG_THRESH:
+                    lag_run += 1
+                    if lag_run >= STALL_STEPS:
+                        stall_angle = actual
+                        self.get_logger().info(
+                            f'[close] aperture stall  actual={stall_angle:.3f} '
+                            f'cmd={cmd:.3f}  lag={lag:.3f}')
+                        break
+                else:
+                    lag_run = 0
+            else:
+                # PATH B — joint frozen; cmd-based trigger at BOX_CONTACT_ANGLE
+                if cmd <= BOX_CONTACT_ANGLE:
+                    stall_angle = BOX_CONTACT_ANGLE
+                    self.get_logger().info(
+                        f'[close] cmd-reach weld  cmd={cmd:.3f} '
+                        f'actual={actual:.3f} (joint not tracking — sim fallback)')
+                    break
         else:
-            if not self._weld_active:
-                self.get_logger().warn(
-                    '[close] Reached floor -0.20 rad — weld never fired.')
+            self.get_logger().warn('[close] swept to -0.20 rad — no stall detected')
 
-        # Back off fingers 2 steps from contact so the finger force doesn't fight
-        # the weld constraint — this eliminates the post-pick shaking.
-        if self._weld_active:
-            j_back = self._last_gripper[0] + 0.010
+        result = self._classify_stall(stall_angle)
+        self.get_logger().info(
+            f'[close] GraspResult={result}  '
+            f'stall={stall_angle}  bumper={self._bumper_contact}')
+
+        if result == GraspResult.GRASPED and not self._weld_active and USE_WELD:
+            self.attach(True)
+
+        # Back off 1 step to remove contact force — prevents ODE "explosion"
+        if self._weld_active or result == GraspResult.GRASPED:
+            j_back = self._last_gripper[0] + CLOSE_STEP_RAD
             t_back = max(0.0, (GRIPPER_OPEN[0] - j_back) /
-                         (GRIPPER_OPEN[0] - GRIPPER_GRASP[0]))
-            back_cmd = Float64MultiArray()
-            back_cmd.data = [float(o + t_back * (c - o))
-                             for o, c in zip(GRIPPER_OPEN, GRIPPER_GRASP)]
-            self._gripper.publish(back_cmd)
-            self._last_gripper = back_cmd.data[:]
+                              (GRIPPER_OPEN[0] - GRIPPER_GRASP[0]))
+            back = Float64MultiArray()
+            back.data = [float(o + t_back * (c - o))
+                         for o, c in zip(GRIPPER_OPEN, GRIPPER_GRASP)]
+            self._gripper.publish(back)
+            self._last_gripper = back.data[:]
             rclpy.spin_once(self, timeout_sec=0.15)
-            self.get_logger().info('[close] fingers backed off 0.01 rad — contact force removed')
+            self.get_logger().info('[close] fingers backed off — contact force removed')
 
         time.sleep(0.3)
+        return result
+
+    def _classify_stall(self, stall_angle):
+        """Classify a stall angle against the calibrated contact band."""
+        if stall_angle is None:
+            return GraspResult.AIR
+        delta = stall_angle - BOX_CONTACT_ANGLE
+        if abs(delta) <= APERTURE_TOL:
+            return GraspResult.GRASPED
+        if delta > 0:          # stalled wider/earlier than expected
+            return GraspResult.OBSTRUCTED
+        return GraspResult.AIR  # stalled narrower than expected
 
     def attach(self, on: bool):
         msg = Bool()
@@ -970,11 +1090,29 @@ class NavPickOrchestrator(Node):
         # works for any object size and eliminates the ODE "explosion" that
         # happened when a fixed -0.20 rad target kept building contact force
         # after the box was already gripped.
-        if USE_WELD:
-            self.attach(True)
-        else:
-            self.get_logger().info('USE_WELD=False — smart_grasp handles weld automatically')
-        self.close_until_contact()
+        result = self.close_until_contact()
+
+        if result != GraspResult.GRASPED and not self._weld_active:
+            success = False
+            for retry in range(1, MAX_GRASP_RETRIES + 1):
+                self.get_logger().warn(
+                    f'[grasp] {result} — retry {retry}/{MAX_GRASP_RETRIES}')
+                self.set_gripper(GRIPPER_OPEN, 'open')
+                if not self.go_pose(tx, ty, tz + HOVER, q, 'lift for retry'):
+                    break
+                if not self.go_pose(tx, ty, tz + GRASP_Z, q, f'grasp retry {retry}'):
+                    break
+                result = self.close_until_contact()
+                if result == GraspResult.GRASPED or self._weld_active:
+                    success = True
+                    break
+            if not success:
+                self.get_logger().error(
+                    f'[grasp] failed after {MAX_GRASP_RETRIES} retries ({result}) — aborting')
+                self.remove_table()
+                self.set_gripper(GRIPPER_OPEN, 'open')
+                self.go_named('ready')
+                return False
 
         # Remove table collision so we can lift without phantom table-gripper collisions
         self.remove_table()
@@ -1114,12 +1252,24 @@ class NavPickOrchestrator(Node):
         def clamp(v, lo, hi):
             return max(lo, min(hi, v))
 
-        # ── Phase A: rotate until bearing ≈ 0 AND heading squared to face ────
-        # 8 s timeout: if the tag is not visible at all from the Nav2 stopping point
-        # (too far, bad angle) we fail fast so the map-position fallback can take over
-        # instead of burning 20 s printing "no tag".
+        def wrap(a):
+            return (a + math.pi) % (2 * math.pi) - math.pi
+
+        # ── Phase A: rotate until the chassis is squared to the tag FACE ────────
+        # Squaring on yaw (not bearing) is the actual "load-bearing" alignment: the
+        # tag_dock_estimator convention has the tag's Z axis point out of the face
+        # toward the robot, so a squarely-facing robot sees tag yaw ≈ π in base_link
+        # (heading_err = wrap(yaw-π) → 0). Bearing alone only centres the tag ahead —
+        # if the robot isn't exactly on the face-normal line (Nav2 tolerance), that
+        # leaves the chassis angled to the face, which Phase C's straight approach
+        # then amplifies into lateral placement error. Phase C's own bearing-based
+        # trim still corrects small residual drift while driving in.
+        # 8 s timeout. tag_seen tracks whether ANY reading arrived — if the tag was
+        # never visible at all from the Nav2 stop (too far / wrong angle), we skip
+        # Phase C immediately instead of burning another 30 s printing "tag lost".
         self.get_logger().info('Phase A: squaring to tag face…')
         ok_count = 0
+        tag_seen  = False
         deadline = time.time() + 8.0
         while time.time() < deadline:
             t = self._read_tag_live()
@@ -1128,16 +1278,15 @@ class NavPickOrchestrator(Node):
                 self.get_logger().info('Phase A: no tag — stopping', throttle_duration_sec=1.0)
                 time.sleep(0.1)
                 continue
+            tag_seen = True
             _, _, tag_range, bearing, yaw = t
-            # heading_err: how much the tag face normal deviates from pointing straight
-            # at us. After TF to base_link, the tag's yaw in base_link ≈ π when the
-            # robot faces the tag squarely (normal points in -X of base_link).
-            # We rotate until both bearing ≈ 0 (tag dead ahead) and bearing is small.
-            err = bearing   # use bearing as the primary error signal
+            heading_err = wrap(yaw - math.pi)
+            err = heading_err
             self.get_logger().info(
-                f'Phase A: bearing={math.degrees(bearing):+.1f}° range={tag_range:.3f}m',
+                f'Phase A: bearing={math.degrees(bearing):+.1f}° '
+                f'heading_err={math.degrees(heading_err):+.1f}° range={tag_range:.3f}m',
                 throttle_duration_sec=0.5)
-            if abs(err) < PLACE_DOCK_BEAR_TOL:
+            if abs(err) < PLACE_DOCK_YAW_TOL:
                 ok_count += 1
                 if ok_count >= 4:
                     self.get_logger().info('Phase A: aligned ✓')
@@ -1151,33 +1300,40 @@ class NavPickOrchestrator(Node):
         self._cmd_vel_pub.publish(Twist())
         time.sleep(0.3)
 
-        # ── Phase C: straight approach until dock_range ───────────────────────
-        self.get_logger().info(f'Phase C: approaching to {dock_range:.2f} m…')
-        deadline = time.time() + 30.0
-        while time.time() < deadline:
-            t = self._read_tag_live()
-            if t is None:
-                self._cmd_vel_pub.publish(Twist())
-                self.get_logger().info('Phase C: tag lost — stopping', throttle_duration_sec=1.0)
-                time.sleep(0.1)
-                continue
-            _, _, tag_range, bearing, _ = t
-            remaining = tag_range - dock_range
-            self.get_logger().info(
-                f'Phase C: range={tag_range:.3f} remaining={remaining:.3f}',
-                throttle_duration_sec=0.5)
-            if remaining <= 0.0:
-                self.get_logger().info(f'Phase C: docked at range={tag_range:.3f} m ✓')
-                break
-            cmd = Twist()
-            cmd.linear.x  = clamp(PLACE_DOCK_K_FWD * remaining,
-                                   PLACE_DOCK_MIN_FWD, PLACE_DOCK_MAX_FWD)
-            cmd.angular.z = clamp(PLACE_DOCK_K_ROT * bearing,
-                                   -PLACE_DOCK_MAX_ROT, PLACE_DOCK_MAX_ROT)
-            self._cmd_vel_pub.publish(cmd)
-            time.sleep(0.05)
-        self._cmd_vel_pub.publish(Twist())
-        time.sleep(0.5)
+        if not tag_seen:
+            # Tag never appeared — skip Phase C (would just print "tag lost" for 30 s)
+            # and fall straight to Phase D, which will return False → map-pos fallback.
+            self.get_logger().warn(
+                'Phase A: tag never visible — skipping Phase C, going direct to Phase D')
+
+        # ── Phase C: straight approach until dock_range (skipped if tag never seen) ──
+        if tag_seen:
+            self.get_logger().info(f'Phase C: approaching to {dock_range:.2f} m…')
+            deadline = time.time() + 30.0
+            while time.time() < deadline:
+                t = self._read_tag_live()
+                if t is None:
+                    self._cmd_vel_pub.publish(Twist())
+                    self.get_logger().info('Phase C: tag lost — stopping', throttle_duration_sec=1.0)
+                    time.sleep(0.1)
+                    continue
+                _, _, tag_range, bearing, _ = t
+                remaining = tag_range - dock_range
+                self.get_logger().info(
+                    f'Phase C: range={tag_range:.3f} remaining={remaining:.3f}',
+                    throttle_duration_sec=0.5)
+                if remaining <= 0.0:
+                    self.get_logger().info(f'Phase C: docked at range={tag_range:.3f} m ✓')
+                    break
+                cmd = Twist()
+                cmd.linear.x  = clamp(PLACE_DOCK_K_FWD * remaining,
+                                       PLACE_DOCK_MIN_FWD, PLACE_DOCK_MAX_FWD)
+                cmd.angular.z = clamp(PLACE_DOCK_K_ROT * bearing,
+                                       -PLACE_DOCK_MAX_ROT, PLACE_DOCK_MAX_ROT)
+                self._cmd_vel_pub.publish(cmd)
+                time.sleep(0.05)
+            self._cmd_vel_pub.publish(Twist())
+            time.sleep(0.5)
 
         # ── Phase D: latch drop point and tag yaw ────────────────────────────
         # Take a fresh reading after settling to get the most accurate latch.
@@ -1517,6 +1673,12 @@ class NavPickOrchestrator(Node):
         # ── FULL PIPELINE: pick → transport → dock → place (multi-level) ────────
         place_levels = max(1, int(self.get_parameter('place_stack_levels').value))
 
+        # 3 distinct boxes live on the pickup table (world: stack_box_0/1/2) — each
+        # is consumed (not recycled/teleported) as the stack grows. _claim_held_box
+        # identifies which physical box was actually grasped so metrics record the
+        # right box's landing pose.
+        self._remaining_boxes = ['stack_box_0', 'stack_box_1', 'stack_box_2']
+
         # Level 0: first pick (robot is already docked at pickup table)
         self._cycle_begin(0)
         ox, oy, oz = self._offset()
@@ -1534,10 +1696,11 @@ class NavPickOrchestrator(Node):
             self.back_up()
             return
 
+        self._current_cycle['box_name'] = self._claim_held_box()
+
         # Transport: unpin, travel pose, clear pickup table
         self.unpin_base()
         self.go_named('travel')
-        self._current_cycle['transport_retained'] = True   # weld was active at departure
         self.get_logger().info('Clearing pickup table — reversing 0.6 m before Nav2…')
         self._backup_from_table(4.0)
 
@@ -1546,6 +1709,9 @@ class NavPickOrchestrator(Node):
         result_str = f'OK  drop={self._latched_drop}' if nav_ok else 'FAILED'
         self.get_logger().info(f'navigate_to_place_table → {result_str}')
         self._current_cycle['dock_via_tag'] = (nav_ok and self._latched_drop is not None)
+        # Sample the weld state at ARRIVAL (not departure) — honest measure of
+        # whether the grasp actually survived transport.
+        self._current_cycle['transport_retained'] = self._weld_active
 
         if not nav_ok:
             self.get_logger().error('Place dock failed — aborting')
@@ -1563,9 +1729,9 @@ class NavPickOrchestrator(Node):
             self._current_cycle['place_success'] = place_ok
 
             # Measure where the box actually landed (for the thesis metrics)
-            expected_z = TABLE_MAP_Y * 0.0   # unused — compute from stack geometry
             stack_top_z = 0.10 + lvl * BOX_HEIGHT + BOX_HALF_H  # world z of box centre
-            self._cycle_measure_placement(TABLE_MAP_X, TABLE_MAP_Y, stack_top_z)
+            self._cycle_measure_placement(TABLE_MAP_X, TABLE_MAP_Y, stack_top_z,
+                                          box_name=self._current_cycle['box_name'])
             self._cycle_end()
 
             if not place_ok:
@@ -1575,15 +1741,16 @@ class NavPickOrchestrator(Node):
             if lvl + 1 >= place_levels:
                 break   # all levels done
 
+            if not self._remaining_boxes:
+                self.get_logger().warn('No boxes left to fetch — stopping stack')
+                break
+
             # ── Fetch next box ───────────────────────────────────────────────
             self._cycle_begin(lvl + 1)
             self.get_logger().info(f'Fetching box for level {lvl + 1}…')
             self.unpin_base()
             self.go_named('travel')
             self._backup_from_table(3.0)
-
-            self.reset_box()
-            time.sleep(0.7)
 
             self._activate_nav2_cmdvel()
             if not self.navigate_to_table():
@@ -1607,12 +1774,14 @@ class NavPickOrchestrator(Node):
                 self._cycle_end()
                 break
 
+            self._current_cycle['box_name'] = self._claim_held_box()
+
             self.unpin_base()
             self.go_named('travel')
-            self._current_cycle['transport_retained'] = True
             self._backup_from_table(4.0)
 
             nav_ok2 = self.navigate_to_place_table()
+            self._current_cycle['transport_retained'] = self._weld_active
             self._current_cycle['dock_via_tag'] = nav_ok2 and self._latched_drop is not None
             if not nav_ok2:
                 self.get_logger().error('Re-nav to place table failed — stopping stack')
