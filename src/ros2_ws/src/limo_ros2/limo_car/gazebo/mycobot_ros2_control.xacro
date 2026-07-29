@@ -102,4 +102,36 @@
       <parameters>$(find limo_car)/config/mycobot_controllers.yaml</parameters>
     </plugin>
   </gazebo>
+
+  <!-- ── Real physics grasp (added 2026-07-29) ────────────────────────────────
+       Creates an ACTUAL fixed joint between the palm and the grasped object once
+       enough finger contacts accumulate, and destroys it when the gripper opens
+       past <release_position>.
+
+       Replaces the kinematic weld in grasp_attacher.py, which had two defects the
+       joint fixes at once:
+         1. It only copied POSITION. The object's orientation was frozen at pickup,
+            so the box never rotated with the hand — the dome stayed pointing up
+            however the wrist turned. A fixed joint couples all 6 DOF.
+         2. It teleported at ~50 Hz while Gazebo physics runs at 1000 Hz — a 20×
+            mismatch, so the box drifted under gravity between updates and snapped
+            back, which is the visible lag/jitter when the arm or base moves fast.
+            A joint is solved inside the physics step, so there is no lag at all.
+
+       release_position=0.0: the gripper closes toward -0.20 and opens to +0.15, so
+       "joint position rose above 0.0" means the fingers have opened → let go.
+       grasp_count_threshold=10 is the plugin default; lower it if grasps are missed,
+       raise it if the box is grabbed on a glancing touch. -->
+  <gazebo>
+    <plugin filename="libgazebo_grasp_plugin.so" name="gazebo_grasp_fix">
+      <palm_link>gripper_base</palm_link>
+      <gripper_finger_link>gripper_left1</gripper_finger_link>
+      <gripper_finger_link>gripper_left3</gripper_finger_link>
+      <gripper_finger_link>gripper_right1</gripper_finger_link>
+      <gripper_finger_link>gripper_right3</gripper_finger_link>
+      <gripper_joint>gripper_controller</gripper_joint>
+      <release_position>0.0</release_position>
+      <grasp_count_threshold>10</grasp_count_threshold>
+    </plugin>
+  </gazebo>
 </robot>

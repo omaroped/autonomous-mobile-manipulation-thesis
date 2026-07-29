@@ -221,27 +221,63 @@
     <gazebo reference="${prefix}gripper_base">
       <material>Gazebo/White</material>
     </gazebo>
+    <!-- Soft contact (was: bare rigid collision boxes, no kp/kd/minDepth — undamped
+         contact against a light box causes a velocity-impulse launch on gripper close).
+         Same proven values as worlds/test_table.sdf, in URDF's camelCase gazebo-extension
+         tag names (maxVel/minDepth), not raw SDF's snake_case (max_vel/min_depth). -->
     <gazebo reference="${prefix}gripper_left1">
       <material>Gazebo/DarkGrey</material>
-      <mu1>1.0</mu1>
-      <mu2>1.0</mu2>
+      <mu1>1.5</mu1>
+      <mu2>1.5</mu2>
+      <kp>1e5</kp>
+      <kd>50</kd>
+      <maxVel>0.01</maxVel>
+      <minDepth>0.001</minDepth>
     </gazebo>
     <gazebo reference="${prefix}gripper_left2">
       <material>Gazebo/DarkGrey</material>
+      <mu1>1.5</mu1>
+      <mu2>1.5</mu2>
+      <kp>1e5</kp>
+      <kd>50</kd>
+      <maxVel>0.01</maxVel>
+      <minDepth>0.001</minDepth>
     </gazebo>
     <gazebo reference="${prefix}gripper_left3">
       <material>Gazebo/DarkGrey</material>
+      <mu1>1.5</mu1>
+      <mu2>1.5</mu2>
+      <kp>1e5</kp>
+      <kd>50</kd>
+      <maxVel>0.01</maxVel>
+      <minDepth>0.001</minDepth>
     </gazebo>
     <gazebo reference="${prefix}gripper_right1">
       <material>Gazebo/DarkGrey</material>
-      <mu1>1.0</mu1>
-      <mu2>1.0</mu2>
+      <mu1>1.5</mu1>
+      <mu2>1.5</mu2>
+      <kp>1e5</kp>
+      <kd>50</kd>
+      <maxVel>0.01</maxVel>
+      <minDepth>0.001</minDepth>
     </gazebo>
     <gazebo reference="${prefix}gripper_right2">
       <material>Gazebo/DarkGrey</material>
+      <mu1>1.5</mu1>
+      <mu2>1.5</mu2>
+      <kp>1e5</kp>
+      <kd>50</kd>
+      <maxVel>0.01</maxVel>
+      <minDepth>0.001</minDepth>
     </gazebo>
     <gazebo reference="${prefix}gripper_right3">
       <material>Gazebo/DarkGrey</material>
+      <mu1>1.5</mu1>
+      <mu2>1.5</mu2>
+      <kp>1e5</kp>
+      <kd>50</kd>
+      <maxVel>0.01</maxVel>
+      <minDepth>0.001</minDepth>
     </gazebo>
 
   </xacro:macro>

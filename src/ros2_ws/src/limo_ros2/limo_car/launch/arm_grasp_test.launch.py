@@ -46,18 +46,22 @@ def generate_launch_description():
     spawn_py = '/opt/ros/humble/lib/gazebo_ros/spawn_entity.py'
 
     # Box on a thin TABLE at the arm's reachable top-down zone: base_link
-    # (0.21, 0, 0.08) -> world (-2, 6.79, 0.21), robot at (-2,7) facing -Y.
+    # (0.25, 0, 0.08) -> world (-2, 6.75, 0.21), robot at (-2,7) facing -Y.
     # Table top at z=0.20; the 2 cm box sits on it. Table is narrow in y so it
     # clears the robot's front. Realistic (not floating), and reachable.
+    # Moved +0.04 m further out than the original 6.79: the robot's own body
+    # collision (0.16 m half-extent) left only ~2 cm clearance to the table's
+    # near face at 6.79, which in practice was enough to jitter/collide on
+    # spawn settling. This gives ~6 cm clearance instead.
     spawn_table = ExecuteProcess(
         cmd=['/usr/bin/python3', spawn_py,
              '-file', table_sdf, '-entity', 'grasp_test_table',
-             '-x', '-2.0', '-y', '6.79', '-z', '0.10'],   # 0.20-tall table -> top at 0.20
+             '-x', '-2.0', '-y', '6.75', '-z', '0.10'],   # 0.20-tall table -> top at 0.20
         output='screen')
     spawn_box = ExecuteProcess(
         cmd=['/usr/bin/python3', spawn_py,
              '-file', box_sdf, '-entity', 'grasp_test_box',
-             '-x', '-2.0', '-y', '6.79', '-z', '0.215'],    # 3 cm box on the table top (z=0.20 + half 0.015)
+             '-x', '-2.0', '-y', '6.75', '-z', '0.215'],    # 3 cm box on the table top (z=0.20 + half 0.015)
         output='screen')
 
     # Pin the base so the arm's reaction can't roll it (drift) or launch it on a
@@ -72,10 +76,12 @@ def generate_launch_description():
     return LaunchDescription([
         drive_mode_arg,
         sim,
+        # base_pin FIRST, well before the table spawns — it only needs ~3 s internally to
+        # let the robot settle on its wheels (see base_pin.py). Previously this engaged at
+        # t=12s while the table spawned at t=8s: with only ~2 cm nominal clearance between
+        # the robot's own body and the table, that 4 s unpinned window let any contact
+        # bounce the free-rolling base repeatedly (the "hitting it over and over" jitter).
+        TimerAction(period=1.0, actions=[base_pin]),
         TimerAction(period=8.0, actions=[spawn_table]),
         TimerAction(period=10.0, actions=[spawn_box]),
-        # base_pin: holds the base against the arm's reaction (a SIM test fixture). The light
-        # sim base drifts otherwise; the real 4.2 kg LIMO + ground friction wouldn't. Any small
-        # residual jitter is a sim artifact, not real-robot behaviour.
-        TimerAction(period=12.0, actions=[base_pin]),
     ])

@@ -328,45 +328,19 @@
          for sim dynamics, not a precision inertia calc).
          Same tuned friction/contact ODE params as before (soft contact prevents
          jitter/tunnelling on the table surface). -->
+    <!-- REGRESSION TEST 2026-07-28 — collision reverted to a PRIMITIVE box.
+         The pipeline completed successfully end-to-end on 2026-07-02 (see
+         data/metrics_20260702_003437.csv and _232206.csv: pick/transport/dock/place
+         all True) with a primitive-collision box 0.035x0.035x0.04 at pose -2.00 4 0.12.
+         It then failed 17 consecutive runs after the 3-box self-centering redesign
+         swapped the collision to the triangle mesh stack_box.stl at -2.08 4 0.12.
+         Triangle-mesh collision on a small, light, grasped object is a known ODE
+         instability source and matches the observed "box launches / drops on lift".
+         The mesh BODY is 0.035x0.035x0.040 (gen_stack_box.py) — identical to the
+         primitive — so BOX_HALF_H / BOX_HEIGHT in the orchestrator stay valid.
+         The mesh is kept for VISUAL only, so the box still looks the same.
+         If this restores success, the mesh collision was the regression. -->
     <model name='stack_box_0'>
-      <pose>-2.08 4 0.12 0 0 0</pose>
-      <link name='link'>
-        <inertial>
-          <mass>0.04</mass>
-          <inertia>
-            <ixx>9.42e-6</ixx><ixy>0</ixy><ixz>0</ixz>
-            <iyy>9.42e-6</iyy><iyz>0</iyz>
-            <izz>8.17e-6</izz>
-          </inertia>
-        </inertial>
-        <collision name='col'>
-          <geometry><mesh><uri>model://limo_car/meshes/stack_box.stl</uri><scale>1 1 1</scale></mesh></geometry>
-          <surface>
-            <friction>
-              <ode><mu>1.0</mu><mu2>1.0</mu2></ode>
-            </friction>
-            <contact>
-              <ode>
-                <kp>1e6</kp>
-                <kd>1.0</kd>
-                <max_vel>0.01</max_vel>
-                <min_depth>0.001</min_depth>
-              </ode>
-            </contact>
-          </surface>
-        </collision>
-        <visual name='vis'>
-          <geometry><mesh><uri>model://limo_car/meshes/stack_box.stl</uri><scale>1 1 1</scale></mesh></geometry>
-          <material>
-            <ambient>0 0 1 1</ambient>
-            <diffuse>0 0.2 1 1</diffuse>
-          </material>
-        </visual>
-        <self_collide>0</self_collide>
-      </link>
-    </model>
-
-    <model name='stack_box_1'>
       <pose>-2.00 4 0.12 0 0 0</pose>
       <link name='link'>
         <inertial>
@@ -378,7 +352,10 @@
           </inertia>
         </inertial>
         <collision name='col'>
-          <geometry><mesh><uri>model://limo_car/meshes/stack_box.stl</uri><scale>1 1 1</scale></mesh></geometry>
+          <!-- PRIMITIVE, exactly as in the last known-working commit 08e8af4.
+               Contact params below are byte-identical to that version, so the
+               collision SHAPE is the only remaining difference. -->
+          <geometry><box><size>0.035 0.035 0.04</size></box></geometry>
           <surface>
             <friction>
               <ode><mu>1.0</mu><mu2>1.0</mu2></ode>
@@ -404,43 +381,9 @@
       </link>
     </model>
 
-    <model name='stack_box_2'>
-      <pose>-1.92 4 0.12 0 0 0</pose>
-      <link name='link'>
-        <inertial>
-          <mass>0.04</mass>
-          <inertia>
-            <ixx>9.42e-6</ixx><ixy>0</ixy><ixz>0</ixz>
-            <iyy>9.42e-6</iyy><iyz>0</iyz>
-            <izz>8.17e-6</izz>
-          </inertia>
-        </inertial>
-        <collision name='col'>
-          <geometry><mesh><uri>model://limo_car/meshes/stack_box.stl</uri><scale>1 1 1</scale></mesh></geometry>
-          <surface>
-            <friction>
-              <ode><mu>1.0</mu><mu2>1.0</mu2></ode>
-            </friction>
-            <contact>
-              <ode>
-                <kp>1e6</kp>
-                <kd>1.0</kd>
-                <max_vel>0.01</max_vel>
-                <min_depth>0.001</min_depth>
-              </ode>
-            </contact>
-          </surface>
-        </collision>
-        <visual name='vis'>
-          <geometry><mesh><uri>model://limo_car/meshes/stack_box.stl</uri><scale>1 1 1</scale></mesh></geometry>
-          <material>
-            <ambient>0 0 1 1</ambient>
-            <diffuse>0 0.2 1 1</diffuse>
-          </material>
-        </visual>
-        <self_collide>0</self_collide>
-      </link>
-    </model>
+    <!-- stack_box_1 and stack_box_2 removed — single-box testing for now. Re-add
+         them (and revert _remaining_boxes in nav_pick_orchestrator.py) once
+         one-box grasping is reliable. -->
 
     <gui fullscreen="0">
       <camera name="user_camera">

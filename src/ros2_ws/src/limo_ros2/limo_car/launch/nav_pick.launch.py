@@ -20,7 +20,7 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
-    DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
+    DeclareLaunchArgument, IncludeLaunchDescription, TimerAction, SetLaunchConfiguration
 )
 from launch.substitutions import LaunchConfiguration
 from launch.launch_description_sources import PythonLaunchDescriptionSource
@@ -78,6 +78,16 @@ def generate_launch_description():
         'metrics_csv', default_value='',
         description='Path for the per-cycle metrics CSV. Empty = auto-name under data/.')
 
+    # Preserve the real top-level use_rviz BEFORE the gazebo include can touch it.
+    # ackermann_gazebo.launch.py declares its OWN 'use_rviz' argument too, and the
+    # 'use_rviz': 'false' passed into it below overwrites the shared launch-context
+    # value for that name — LaunchConfiguration substitutions resolve lazily, so
+    # moveit_launch's read of 'use_rviz' 8 s later was silently picking up 'false'
+    # instead of this top-level flag, and RViz never launched. Confirmed via a
+    # minimal reproduction (same TimerAction pattern alone launched RViz fine —
+    # only broke once the gazebo include with its own 'use_rviz' arg was added).
+    preserve_use_rviz = SetLaunchConfiguration('moveit_use_rviz', use_rviz)
+
     # ── 1. Gazebo + robot + controllers ──────────────────────────────────────
     gazebo = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -98,7 +108,7 @@ def generate_launch_description():
                 os.path.join(moveit, 'launch', 'moveit.launch.py')),
             launch_arguments={
                 'use_sim_time': 'true',
-                'use_rviz': use_rviz,
+                'use_rviz': LaunchConfiguration('moveit_use_rviz'),
                 'rviz_config': os.path.join(pkg, 'rviz', 'nav_monitor.rviz'),
             }.items())])
 
@@ -186,6 +196,7 @@ def generate_launch_description():
         place_stack_levels_arg,
         dock_range_arg,
         metrics_csv_arg,
+        preserve_use_rviz,
         gazebo,
         moveit_launch,
         nav2_launch,

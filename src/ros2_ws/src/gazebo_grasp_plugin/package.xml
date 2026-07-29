@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>gazebo_grasp_plugin</name>
+  <version>1.0.0</version>
+  <description>
+    Physics-honest grasp plugin for Gazebo Classic. Replaces the SetEntityState
+    "weld" hack with a real fixed joint created through the ODE constraint
+    solver. Detects a grasp via sustained contact on configured finger links,
+    attaches the object, and releases it when the gripper opens.
+  </description>
+  <maintainer email="thesis@local">Omar</maintainer>
+  <license>MIT</license>
+
+  <buildtool>cmake</buildtool>
+
+  <build_depend>libgazebo-dev</build_depend>
+  <exec_depend>libgazebo11</exec_depend>
+</package>

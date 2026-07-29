@@ -71,7 +71,17 @@ def generate_launch_description():
     # "gazebo-ros2-control-eol-incompatibility").
     from ament_index_python.packages import get_package_prefix
     patched_gzros2_lib = os.path.join(get_package_prefix('gazebo_ros2_control'), 'lib')
-    plugin_path = patched_gzros2_lib + pathsep + '/opt/ros/humble/lib'
+    # libgazebo_grasp_plugin.so — the real fixed-joint grasp (see
+    # gazebo/mycobot_ros2_control.xacro). Gazebo only loads it if its install lib
+    # dir is on GAZEBO_PLUGIN_PATH.
+    # Path is derived from a SIBLING package rather than looked up directly:
+    # gazebo_grasp_plugin is a plain-CMake (non-ament) package, so colcon installs
+    # it but never registers it in the ament index — get_package_prefix() on it
+    # raises PackageNotFoundError even though the .so is built and present.
+    grasp_plugin_lib = os.path.join(
+        os.path.dirname(get_package_prefix('limo_car')), 'gazebo_grasp_plugin', 'lib')
+    plugin_path = (patched_gzros2_lib + pathsep + grasp_plugin_lib
+                   + pathsep + '/opt/ros/humble/lib')
     if 'GAZEBO_MODEL_PATH' in environ:
         model_path  += pathsep + environ['GAZEBO_MODEL_PATH']
     if 'GAZEBO_PLUGIN_PATH' in environ:

@@ -26,6 +26,13 @@ BASE_MODEL = 'mbot'
 BASE_FRAME = 'base_footprint'
 TCP_FRAME = 'gripper_tcp'
 
+# Max gripper_tcp -> box-centre distance that still counts as "between the fingers".
+# The box is 3.5 cm wide / 4 cm tall and the TCP sits ~6 cm above the box centre at
+# the grasp pose, so a genuine grasp is well under 10 cm. Anything beyond that is not
+# being held — refuse to weld it. Without this guard, a single-box world always welds
+# that box no matter where it is (a box on the FLOOR was welded and flown, 2026-07-28).
+MAX_ATTACH_DIST = 0.10
+
 
 def quat_to_R(x, y, z, w):
     return np.array([
@@ -110,28 +117,58 @@ class GraspAttacher(Node):
     # ── reconcile once per loop tick ──────────────────────────────────────────
     def tick(self):
         if self._want and not self._attached:
-            if self._box_name is None:
-                for b_name in ['stack_box_0', 'stack_box_1', 'stack_box_2', 'target_box', 'grasp_test_box']:
-                    p = self._get_world(b_name)
-                    if p is not None:
-                        self._box_name = b_name
-                        self.get_logger().info(f'Detected box model in world: {b_name}')
-                        break
-            
-            box = self._get_world(self._box_name) if self._box_name else None
             g_pos, R_g = self.gripper_world_transform()
-            if box is None or g_pos is None:
-                self.get_logger().warn(f'attach pending — box/gripper pose not ready yet (box name: {self._box_name})',
+            if g_pos is None:
+                self.get_logger().warn('attach pending — gripper TF not ready yet',
                                        throttle_duration_sec=1.0)
                 return
-            bpos = np.array([box.position.x, box.position.y, box.position.z])
+
+            # Pick whichever candidate box is CURRENTLY closest to the gripper — not a
+            # name cached from the first attach ever seen. With 3 boxes coexisting
+            # (self-centering stack), a cached name means every later pick welds to
+            # the same first-found box regardless of which one was actually touched —
+            # confirmed bug: gripper closed on the left box, the right box rose instead.
+            best_name, best_box, best_dist = None, None, float('inf')
+            for b_name in ['stack_box_0', 'stack_box_1', 'stack_box_2', 'target_box', 'grasp_test_box']:
+                p = self._get_world(b_name)
+                if p is None:
+                    continue
+                bpos = np.array([p.position.x, p.position.y, p.position.z])
+                d = float(np.linalg.norm(bpos - g_pos))
+                if d < best_dist:
+                    best_name, best_box, best_dist = b_name, p, d
+
+            if best_name is None:
+                self.get_logger().warn('attach pending — no box pose available yet',
+                                       throttle_duration_sec=1.0)
+                return
+
+            # Distance guard. "Nearest box" is meaningless on its own when only ONE
+            # box exists — it wins by default no matter how far away it is. Observed
+            # 2026-07-28: a box that had fallen onto the FLOOR was welded to the
+            # gripper even though the fingers closed on empty air at table height,
+            # and it then flew up with the arm. A box that is not physically between
+            # the fingers must never be welded.
+            if best_dist > MAX_ATTACH_DIST:
+                self.get_logger().warn(
+                    f'attach REFUSED — nearest box {best_name} is {best_dist:.3f} m from the '
+                    f'gripper (limit {MAX_ATTACH_DIST:.3f} m). Nothing is between the fingers; '
+                    f'reporting grasp failure rather than welding a distant box.',
+                    throttle_duration_sec=1.0)
+                return
+
+            self._box_name = best_name
+            bpos = np.array([best_box.position.x, best_box.position.y, best_box.position.z])
             # store offset in gripper frame so it rotates correctly on each tick
             self._off = R_g.T @ (bpos - g_pos)
-            self._box_quat = box.orientation
+            self._box_quat = best_box.orientation
             self._attached = True
-            self.get_logger().info(f'WELD ON — box follows gripper (offset {self._off.round(3)} gripper-frame)')
+            self.get_logger().info(
+                f'WELD ON — attaching {self._box_name} (dist={best_dist:.3f} m from gripper, '
+                f'offset {self._off.round(3)} gripper-frame)')
         elif not self._want and self._attached:
             self._attached = False
+            self._box_name = None   # reset so the NEXT attach re-evaluates nearest box
             self.get_logger().info('WELD OFF — box released')
 
         if self._attached and self._off is not None:

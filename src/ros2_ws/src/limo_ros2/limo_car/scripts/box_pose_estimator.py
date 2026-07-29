@@ -21,6 +21,8 @@ Pipeline:
         orientation is chosen by the orchestrator, not here)
 """
 
+import time
+
 import rclpy
 from rclpy.node import Node
 from rclpy.duration import Duration
@@ -28,6 +30,7 @@ from rclpy.duration import Duration
 from sensor_msgs.msg import Image, CameraInfo
 from geometry_msgs.msg import PoseStamped, PointStamped
 from visualization_msgs.msg import Marker
+from std_msgs.msg import Float64
 
 import tf2_ros
 from tf2_geometry_msgs import do_transform_point
@@ -78,10 +81,15 @@ class BoxPoseEstimator(Node):
         self.pose_pub   = self.create_publisher(PoseStamped, '/box_pose', 10)
         self.marker_pub = self.create_publisher(Marker, '/box_pose_marker', 10)
         self.debug_pub  = self.create_publisher(Image, '/box_detection_debug', 10)
+        # Freshness signal: /box_pose alone can't tell a consumer whether the pose
+        # was just seen or is a replayed latch from seconds ago (both use the
+        # current timestamp) — /box_detection_age exposes that gap explicitly.
+        self.age_pub    = self.create_publisher(Float64, '/box_detection_age', 10)
 
         # Latch the last good detection in the global 'map' frame and republish it at 20 Hz,
         # transformed dynamically to base_link so the coordinate remains accurate as the robot moves.
         self._last_pose_map = None
+        self._last_real_detect_t = None   # wall-clock time of the last ACTUAL detection
         self.create_timer(0.05, self._publish_latched)
 
         self.get_logger().info('box_pose_estimator started — waiting for camera…')
@@ -220,6 +228,8 @@ class BoxPoseEstimator(Node):
                     throttle_duration_sec=3.0)
                 return
 
+        self._last_real_detect_t = time.time()   # a genuine detection happened just now
+
         pose = PoseStamped()
         pose.header.frame_id = TARGET_FRAME
         pose.header.stamp = self.get_clock().now().to_msg()
@@ -282,7 +292,15 @@ class BoxPoseEstimator(Node):
 
     def _publish_latched(self):
         """Republish the last known box pose at 20 Hz, dynamically transformed from
-        map to base_link so the coordinate remains accurate as the robot moves."""
+        map to base_link so the coordinate remains accurate as the robot moves.
+
+        Also publishes /box_detection_age — seconds since the last REAL detection —
+        because this replay always uses the current timestamp, so a subscriber to
+        /box_pose alone cannot tell a live sighting from an old one being repeated."""
+        age = float('inf') if self._last_real_detect_t is None \
+            else time.time() - self._last_real_detect_t
+        self.age_pub.publish(Float64(data=age))
+
         if self._last_pose_map is None:
             return
         try:

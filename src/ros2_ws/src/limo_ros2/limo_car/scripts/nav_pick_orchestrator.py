@@ -32,6 +32,8 @@ import os
 import statistics
 import time
 
+import numpy as np
+
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionClient
@@ -39,7 +41,7 @@ from rclpy.duration import Duration
 
 from geometry_msgs.msg import (PoseStamped, Pose, Point, PointStamped,
                                 PoseWithCovarianceStamped, Twist)
-from std_msgs.msg import Float64MultiArray, Bool
+from std_msgs.msg import Float64MultiArray, Bool, Float64
 from action_msgs.msg import GoalStatus
 from nav_msgs.msg import Odometry
 
@@ -86,6 +88,12 @@ BACKUP_VEL_X = -0.15   # m/s reverse
 BACKUP_SEC   =  2.5    # back up ~0.38 m
 
 # ── Gripper ───────────────────────────────────────────────────────────────────
+# 6-element commands, mirror signs [1,1,-1,-1,-1,1] baked in — must match the
+# joints: list in config/mycobot_controllers.yaml.
+# The mimic-joint experiment (single-element commands) was REVERTED on 2026-07-29:
+# it made gazebo_ros2_control register the followers as "<joint>_mimic", which broke
+# their TF and left MoveIt without half the gripper's collision model. See
+# VERIFICATION_REGISTER.md V2.
 GRIPPER_OPEN  = [ 0.15,  0.15, -0.15, -0.15, -0.15,  0.15]
 GRIPPER_GRASP = [-0.20, -0.20,  0.20,  0.20,  0.20, -0.20]   # gentle partial close
 GRIPPER_TOPIC = '/mycobot_gripper_controller/commands'
@@ -218,7 +226,7 @@ class NavPickOrchestrator(Node):
         # Gripper
         self._gripper      = self.create_publisher(Float64MultiArray, GRIPPER_TOPIC, 10)
         self._attach_pub   = self.create_publisher(Bool, '/grasp_attach', 10)
-        self._last_gripper   = [0.0] * 6
+        self._last_gripper   = [0.0] * len(GRIPPER_OPEN)   # 1 joint (mimic followers)
         self._weld_active    = False
         self._gripper_actual = GRIPPER_OPEN[0]   # actual position from /joint_states
         self._bumper_contact = False              # bumper oracle from smart_grasp
@@ -231,6 +239,11 @@ class NavPickOrchestrator(Node):
         # Perception
         self._latest_box = None
         self.create_subscription(PoseStamped, '/box_pose', self._box_cb, 10)
+        # Age (s) since box_pose_estimator's last REAL detection — /box_pose itself
+        # keeps replaying the last-known position even when nothing is visible right
+        # now, so this is the only way to tell a live sighting from a stale memory.
+        self._box_age = float('inf')
+        self.create_subscription(Float64, '/box_detection_age', self._box_age_cb, 10)
 
         # Odometry (for the blind final approach — drive a measured distance when the
         # real-spec camera can no longer see the box closer than 0.30 m)
@@ -253,7 +266,13 @@ class NavPickOrchestrator(Node):
         # 'target_box' no longer exists — the world now has 3 distinct stack_box_N
         # boxes. stack_box_1 sits exactly at the box_reset_xyz default below, so
         # calib_loop()/run_stack()'s reset_box() has a real entity to respawn.
-        self.declare_parameter('box_name', 'stack_box_1')
+        # MUST match a model that actually exists in the world. Was 'stack_box_1',
+        # which was deleted on 2026-07-28 during the switch to single-box testing —
+        # so reset_box() teleported a non-existent model, logged success anyway, and
+        # the real box was never put back on the table. Every calib iteration after
+        # the first then grasped at an empty spot (observed: iters 2-10 aborted in
+        # under a second each).
+        self.declare_parameter('box_name', 'stack_box_0')
         self.declare_parameter('box_reset_xyz', [-2.0, 4.0, 0.12])  # where to respawn the box each iter
 
         # ── Stacking knobs (live, tune with `ros2 param set` — NO relaunch) ──────
@@ -297,6 +316,9 @@ class NavPickOrchestrator(Node):
 
     def _box_cb(self, msg):
         self._latest_box = msg
+
+    def _box_age_cb(self, msg):
+        self._box_age = msg.data
 
     def _tag_pose_cb(self, msg: PoseStamped):
         self._latest_tag_pose = msg
@@ -416,6 +438,50 @@ class NavPickOrchestrator(Node):
             writer.writeheader()
             writer.writerows(self._metrics)
         self.get_logger().info(f'[metrics] wrote {len(self._metrics)} rows → {csv_path}')
+
+    def _grasp_attempts_csv_path(self):
+        if not hasattr(self, '_grasp_csv_path'):
+            data_dir = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                '..', '..', '..', '..', '..', 'data')
+            os.makedirs(data_dir, exist_ok=True)
+            ts = time.strftime('%Y%m%d_%H%M%S')
+            self._grasp_csv_path = os.path.join(data_dir, f'grasp_attempts_{ts}.csv')
+        return self._grasp_csv_path
+
+    def _log_grasp_attempt(self, attempt, classifier_result, verified):
+        """Phase 0 — append one row per grasp attempt immediately (not just at
+        run end), so ground-truth vision-verified outcomes survive a crash."""
+        path = self._grasp_attempts_csv_path()
+        cycle = self._current_cycle['cycle'] if hasattr(self, '_current_cycle') else -1
+        # stall_angle is the raw measurement the old classifier used to gate on.
+        # It no longer decides anything, but logging it every attempt builds the
+        # real dataset needed to calibrate BOX_CONTACT_ANGLE properly.
+        # Centring, measured while the box is held aloft:
+        #   jaw_mm   — between the jaws (0 = perfectly gripped)
+        #   slide_mm — along the flat finger faces; |slide| > 18 mm means the box is
+        #              past the edge of the 36 mm face. THIS is the component
+        #              grasp_off_y corrects. A consistent sign across trials is a
+        #              systematic offset; scattered signs are positioning noise.
+        cen = getattr(self, '_last_centering', None)
+        row = {
+            'timestamp':         time.strftime('%Y-%m-%d %H:%M:%S'),
+            'cycle':             cycle,
+            'attempt':           attempt,
+            'classifier_result': str(classifier_result),
+            'stall_angle':       getattr(self, '_last_stall_angle', None),
+            'verified_success':  verified,
+            'centering_jaw_mm':   round(cen[0] * 1000, 2) if cen else None,
+            'centering_slide_mm': round(cen[1] * 1000, 2) if cen else None,
+        }
+        self._last_centering = None   # don't carry a stale reading into the next row
+        write_header = not os.path.exists(path)
+        with open(path, 'a', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=list(row.keys()))
+            if write_header:
+                writer.writeheader()
+            writer.writerow(row)
+        self.get_logger().info(f'[verify] logged grasp attempt → {path}')
 
     def _offset(self):
         """Current grasp offset (live ROS params — tunable without relaunch)."""
@@ -576,6 +642,207 @@ class NavPickOrchestrator(Node):
             return None
         return x, y
 
+    def _read_box_live_xyz(self):
+        """Same as _read_box_live but keeps Z. Grasp verification MUST use 3D:
+        the lift is straight up, so a correctly-grasped box keeps the same (x, y)
+        and only Z changes. An XY-only check therefore reports a good grasp as
+        'box still on the table' — which released the weld and dropped the box on
+        every attempt (bug introduced and fixed 2026-07-28)."""
+        rclpy.spin_once(self, timeout_sec=0.05)
+        p = self._latest_box
+        if p is None or p.header.frame_id != PLANNING_FRAME:
+            return None
+        x, y, z = p.pose.position.x, p.pose.position.y, p.pose.position.z
+        if x < 0.10 or x > 1.5:
+            return None
+        return x, y, z
+
+    def _box_world_z(self):
+        """True box height in the Gazebo world frame — SIM GROUND TRUTH.
+
+        Perception is not accurate enough to referee a grasp: measured 2026-07-28,
+        a genuinely-grasped box that physically rose 0.06 m was reported by
+        /box_pose as having moved only 0.033 m, while a box welded from 0.079 m
+        away (fingers closed on air) read 0.063 m. The noise band overlaps the
+        signal, so no tolerance can separate them. Gazebo's own state is exact.
+
+        Sim only — /get_entity_state does not exist on real hardware, which is why
+        _verify_grasp_vision is kept as the hardware path.
+        """
+        if not self._get_state.service_is_ready():
+            return None
+        names = list(getattr(self, '_remaining_boxes', None) or []) or \
+            ['stack_box_0', 'stack_box_1', 'stack_box_2', 'target_box', 'grasp_test_box']
+        for name in names:
+            req = GetEntityState.Request()
+            req.name = name
+            req.reference_frame = 'world'
+            fut = self._get_state.call_async(req)
+            rclpy.spin_until_future_complete(self, fut, timeout_sec=2.0)
+            if fut.done() and fut.result() is not None and fut.result().success:
+                return fut.result().state.pose.position.z
+        return None
+
+    def _measure_grasp_centering(self):
+        """How far off-centre did the box end up between the fingers?
+
+        Measured WHILE THE BOX IS HELD UP, which is the only moment the answer is
+        unambiguous: the box is rigidly located relative to the gripper, so the
+        difference between where the box actually is and where the tool centre is
+        IS the grasp error. On the table you cannot tell a good grasp from a lucky
+        one; in the air you can.
+
+        Uses Gazebo ground truth for the box and TF for gripper_tcp, so the number
+        is exact and free of the perception noise that makes /box_pose unusable as
+        a referee (see _box_world_z).
+
+        The lateral component is the calibration signal for grasp_off_y: a
+        consistent sign across trials is a systematic offset to correct, not noise.
+        Logged per attempt so N trials produce a mean automatically.
+
+        Returns (lat, ax, along) in the GRIPPER's own frame, or None:
+          lat   — left/right within the jaw gap  (the "is it centred" number)
+          ax    — across the jaw faces
+          along — down the finger axis (depth into the gap)
+        """
+        box_p = self._box_world_pose()
+        if box_p is None:
+            return None
+        try:
+            tf = self._tf_buf.lookup_transform('odom', TCP_LINK, rclpy.time.Time())
+        except Exception as e:
+            self.get_logger().warn(f'[centering] TF odom→{TCP_LINK} unavailable: {e}')
+            return None
+
+        t, q = tf.transform.translation, tf.transform.rotation
+        d = np.array([box_p.x - t.x, box_p.y - t.y, box_p.z - t.z])
+
+        # Rotate the world-frame offset into the gripper frame (R^T · d) so the
+        # components mean something mechanical instead of depending on robot yaw.
+        x, y, z, w = q.x, q.y, q.z, q.w
+        R = np.array([
+            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w),     2 * (x * z + y * w)],
+            [2 * (x * y + z * w),     1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+            [2 * (x * z - y * w),     2 * (y * z + x * w),     1 - 2 * (x * x + y * y)],
+        ])
+        local = R.T @ d
+
+        # Gripper-frame axes, verified against gripper.xacro (2026-07-28, register B6):
+        #   x — the JAW-OPENING direction. Finger pivots sit at x = ∓0.012 and
+        #       gripper_tcp at x = 0, so the tool frame IS centred between the jaws.
+        #       This component answers "is the box gripped centrally?".
+        #   y — along the fingers (the approach axis; points down in a top-down grasp).
+        #   z — the hinge axis: the box slides freely along the flat finger faces in
+        #       this direction, so an offset here means the box is near a face edge
+        #       rather than badly gripped.
+        # These were previously mislabelled (z was reported as "lateral"), which made
+        # a well-centred grasp look 23 mm off.
+        jaw, along, slide = float(local[0]), float(local[1]), float(local[2])
+        FACE_HALF = 0.018   # finger face is 36 mm wide (gripper.xacro collision box)
+        self.get_logger().info(
+            f'[centering] box vs tool centre (gripper frame): '
+            f'between-jaws={jaw * 1000:+.1f} mm  '
+            f'along-faces={slide * 1000:+.1f} mm  '
+            f'depth-into-gap={along * 1000:+.1f} mm  → '
+            f'{"CENTRED" if abs(jaw) < 0.005 else "OFF-CENTRE"} between jaws; '
+            f'{"within" if abs(slide) < FACE_HALF else "PAST THE EDGE OF"} the finger faces')
+        self._last_centering = (jaw, slide, along)
+        return jaw, slide, along
+
+    def _box_world_pose(self):
+        """Full box position in the Gazebo world frame (sim ground truth), or None."""
+        if not self._get_state.service_is_ready():
+            return None
+        names = list(getattr(self, '_remaining_boxes', None) or []) or \
+            ['stack_box_0', 'stack_box_1', 'stack_box_2', 'target_box', 'grasp_test_box']
+        for name in names:
+            req = GetEntityState.Request()
+            req.name = name
+            req.reference_frame = 'world'
+            fut = self._get_state.call_async(req)
+            rclpy.spin_until_future_complete(self, fut, timeout_sec=2.0)
+            if fut.done() and fut.result() is not None and fut.result().success:
+                return fut.result().state.pose.position
+        return None
+
+    def _verify_grasp_truth(self, z_before, min_rise=0.02):
+        """Did the box actually leave the table? Compares true world Z before the
+        close against after the lift.
+
+        In theory the lift raises the TCP by HOVER - GRASP_Z = 0.06 m, so a held
+        box should rise 0.06 m. MEASURED 2026-07-28: it rose only **0.031 m** on a
+        good grasp — barely over the old 0.030 threshold, a 1 mm margin. The
+        shortfall is because the lift is planned in JOINT space (RRTConnect), so
+        the tool does not travel straight up; it arcs and rotates, and a box held
+        at a fixed offset in the gripper frame follows that arc rather than rising
+        the full commanded amount. Threshold lowered to 0.02 m so a genuine grasp
+        is not rejected by that shortfall. A box left on the table moves 0.000 m,
+        so the separation is still unambiguous.
+
+        Returns True / False, or None if Gazebo state is unavailable (then the
+        caller falls back to the vision check).
+        """
+        if z_before is None:
+            return None
+        z_now = self._box_world_z()
+        if z_now is None:
+            return None
+        rise = z_now - z_before
+        ok = rise >= min_rise
+        self.get_logger().info(
+            f'[verify] GROUND TRUTH: box world z {z_before:.3f} → {z_now:.3f} '
+            f'(rise {rise:+.3f} m, need ≥{min_rise:.3f}) → '
+            f'{"LIFTED (grasped)" if ok else "DID NOT MOVE (failed)"}')
+        return ok
+
+    def _verify_grasp_vision(self, px, py, pz, tol=0.05, fresh_age=0.3, timeout=4.0):
+        """Ground-truth grasp check (Phase 0): after the lift, wait for a FRESH
+        /box_pose detection (age < fresh_age — a real sighting just now, not
+        box_pose_estimator's 20 Hz replay of an old latch) and see if a box is
+        still at the ORIGINAL 3D grasp point.
+
+        MUST be 3D. The lift moves straight up, so a correctly-grasped box keeps
+        the same (x, y) and only its Z changes. An XY-only comparison reported
+        every good grasp as 'box still on the table', which released the weld and
+        dropped the box — the repeating lift-a-bit-then-drop loop (fixed 2026-07-28).
+
+        Returns:
+          True  — grasp succeeded (nothing left at the original grasp point)
+          False — grasp failed (a box is still sitting there)
+          None  — inconclusive (no fresh detection within timeout — e.g. the arm
+                  is occluding the camera's view of the table)
+        """
+        deadline = time.time() + timeout
+        saw_fresh = False
+        hit = False
+        dist = None
+        while time.time() < deadline:
+            rclpy.spin_once(self, timeout_sec=0.05)
+            if self._box_age <= fresh_age:
+                saw_fresh = True
+                reading = self._read_box_live_xyz()
+                if reading is not None:
+                    x, y, z = reading
+                    dist = math.sqrt((x - px) ** 2 + (y - py) ** 2 + (z - pz) ** 2)
+                    if dist <= tol:
+                        hit = True
+                break   # one fresh look is enough — no need to wait out the timeout
+            time.sleep(0.1)
+
+        if not saw_fresh:
+            self.get_logger().warn(
+                f'[verify] no fresh /box_pose detection within {timeout}s '
+                f'(last age={self._box_age:.2f}s) — grasp outcome INCONCLUSIVE, '
+                f'not assumed successful')
+            return None
+
+        d_str = f'{dist:.3f} m' if dist is not None else 'no box detected'
+        self.get_logger().info(
+            f'[verify] fresh look at grasp point ({px:.3f},{py:.3f},{pz:.3f}): '
+            f'nearest box {d_str} (tol {tol:.3f}) → '
+            f'{"STILL THERE (failed)" if hit else "GONE (grasped)"}')
+        return not hit
+
     def visual_docking(self):
         """MECHANISM 1 — land, align, then approach (differential drive).
 
@@ -688,6 +955,54 @@ class NavPickOrchestrator(Node):
 
         self._cmd_vel_pub.publish(Twist()); time.sleep(0.5)
 
+        # ── Lateral re-fix AFTER the drive (added 2026-07-28) ─────────────────
+        # WHY: _dock_box was frozen BEFORE this drive, so its y came from a
+        # measurement taken ~1 m away, expressed in the base_link frame as it was
+        # back then. The robot then drove ~0.76 m forward. Any residual yaw error
+        # during that drive rotates the frame and slides the target sideways —
+        # Phase A's rotate-to-align is known to oscillate ±5-6° and time out
+        # without converging, and at 0.24 m a 5° residual is ~2 cm of lateral
+        # error, consistently to one side. That is the observed "box ends up a bit
+        # to the right, but still between the fingers" bias.
+        #
+        # THE FIX: box_pose_estimator latches each detection as a point in the MAP
+        # frame and republishes it at 20 Hz transformed into the CURRENT base_link.
+        # So reading /box_pose now yields the same physical world point expressed
+        # in the frame the arm will actually plan in — the drive and any yaw change
+        # are already accounted for. No new detection is required, which matters on
+        # real hardware where the camera is blind closer than 0.30 m.
+        #
+        # x is deliberately NOT taken from perception: close-range depth is biased
+        # (~0.27 m read vs 0.18 m true) and trusting it pushes the goal past the
+        # arm's reach and fails IK. Range stays odometry-derived (STOP_DISTANCE);
+        # only the lateral/height components are refreshed.
+        # Y ONLY — deliberately NOT z. At close range the base-mounted camera looks
+        # down onto the box and sees mostly its TOP face, so the HSV blob centroid
+        # rides up toward the top surface and z reads high (confirmed by watching
+        # /box_detection_debug at the dock). The estimator re-latches on every
+        # successful detection, so that biased value overwrites the good far-range
+        # one. Height therefore stays with the FAR measurement, where the front face
+        # is visible and the vertical centroid is much closer to the true centre.
+        # Lateral y is unaffected by which face dominates — the top and front faces
+        # share the same left-right centre — so y is safe to refresh, and y is
+        # exactly the component the drive's yaw error corrupts.
+        if self._dock_box is not None:
+            fresh = self._read_box_live_xyz()
+            if fresh is not None:
+                y_old, z_keep = self._dock_box[1], self._dock_box[2]
+                y_new = fresh[1]
+                self._dock_box = (STOP_DISTANCE, y_new, z_keep)
+                self.get_logger().info(
+                    f'[dock] lateral re-fix after drive: y {y_old:+.4f} → {y_new:+.4f} '
+                    f'(Δ{y_new - y_old:+.4f} m)  '
+                    f'[x held at STOP_DISTANCE={STOP_DISTANCE:.2f} — odometry, not depth; '
+                    f'z held at {z_keep:.4f} from the FAR reading — close-range z is '
+                    f'top-face biased]')
+            else:
+                self.get_logger().warn(
+                    '[dock] no /box_pose for the lateral re-fix — keeping the '
+                    'pre-drive estimate (expect a small sideways bias)')
+
     # ── Step 2: Pin base ──────────────────────────────────────────────────────
 
     def pin_base(self):
@@ -786,24 +1101,27 @@ class NavPickOrchestrator(Node):
         time.sleep(0.3)
 
     def close_until_contact(self):
-        """Step-close the gripper; classify the stall via the calibrated aperture band.
+        """Step-close the gripper and weld. Success is decided by VISION
+        (_verify_grasp_vision, Phase 0) — no longer by an aperture threshold.
 
-        Two detection paths:
-          PATH A — joint tracking (real hardware): aperture detection.
-            Once the gripper joint has moved ≥ 3×CLOSE_STEP_RAD from its
-            starting position, we trust /joint_states and check lag vs cmd.
-          PATH B — joint frozen (Gazebo sim): cmd-based weld trigger.
-            In Gazebo Classic the JointGroupPositionController sends position
-            commands but the ODE joint position often does not change in
-            /joint_states.  When actual never moves the lag check fires a false
-            OBSTRUCTED immediately.  Fallback: step cmd to BOX_CONTACT_ANGLE
-            and trigger there — same logic as the old WELD_FALLBACK_ANGLE=-0.10
-            but now using the calibrated contact threshold.
+        WHY THE CLASSIFIER WAS REMOVED (2026-07-28): the stall angle used to be
+        compared against BOX_CONTACT_ANGLE ± APERTURE_TOL, and anything outside
+        that narrow band was discarded as OBSTRUCTED/AIR — which re-opened the
+        gripper and re-descended. But BOX_CONTACT_ANGLE (-0.11) was never
+        calibrated (its own comment said "placeholder; run
+        calibrate_contact_angle.py"), so a physically fine grasp was being
+        thrown away whenever the stall missed a made-up ±0.025 rad window.
+        Observed symptom: close → open → close → open, exactly
+        MAX_GRASP_RETRIES+1 times, then abort.
 
-        Returns a GraspResult string:
-          GRASPED    — stall at BOX_CONTACT_ANGLE ± APERTURE_TOL → weld fired
-          AIR        — swept to full close with no stall (nothing between fingers)
-          OBSTRUCTED — stall before BOX_CONTACT_ANGLE (finger on top face/rim)
+        The close still STOPS early on a genuine stall — that is physically
+        correct (stop squeezing once blocked) and avoids over-compression — it
+        just no longer decides whether the grasp counted. The stall angle is
+        recorded in self._last_stall_angle as diagnostic data so real
+        calibration numbers accumulate in the CSV for the thesis.
+
+        Returns GraspResult.GRASPED once the close completes and the weld is
+        fired; the real verdict comes from the post-lift vision check.
         """
         self._weld_active = False
         cmd     = self._last_gripper[0]
@@ -866,12 +1184,30 @@ class NavPickOrchestrator(Node):
         else:
             self.get_logger().warn('[close] swept to -0.20 rad — no stall detected')
 
-        result = self._classify_stall(stall_angle)
+        # Diagnostic only — recorded for calibration, NOT used to gate the grasp.
+        self._last_stall_angle = stall_angle
+        would_have_been = self._classify_stall(stall_angle)
         self.get_logger().info(
-            f'[close] GraspResult={result}  '
-            f'stall={stall_angle}  bumper={self._bumper_contact}')
+            f'[close] stall={stall_angle}  bumper={self._bumper_contact}  '
+            f'(old calibrated-band classifier would have said {would_have_been} — '
+            f'ignored; that band was never calibrated)')
 
-        if result == GraspResult.GRASPED and not self._weld_active and USE_WELD:
+        # AIR check — the ONE part of the old classifier worth keeping.
+        # This is not a calibrated threshold, it is a binary physical fact: if the
+        # gripper swept all the way to its hard close limit and NOTHING ever
+        # resisted, there is nothing between the fingers. Welding here fakes a
+        # successful grasp — observed 2026-07-28, attempt 3: swept to -0.20 with no
+        # stall, weld grabbed the box from 0.079 m away, and vision then reported
+        # "GONE (grasped)" because the welded box dutifully followed the gripper.
+        if stall_angle is None:
+            self.get_logger().warn(
+                '[close] swept to the close limit with NO resistance at any point — '
+                'nothing is between the fingers. Refusing to weld; reporting AIR.')
+            time.sleep(0.3)
+            return GraspResult.AIR
+
+        result = GraspResult.GRASPED
+        if not self._weld_active and USE_WELD:
             self.attach(True)
 
         # Back off 1 step to remove contact force — prevents ODE "explosion"
@@ -1085,47 +1421,92 @@ class NavPickOrchestrator(Node):
             self.get_logger().error('grasp pose failed — aborting')
             return False
 
-        # Adaptive close: steps 0.5 deg at a time, stops the moment smart_grasp
-        # detects bilateral contact and fires the weld.  No fixed end angle —
-        # works for any object size and eliminates the ODE "explosion" that
-        # happened when a fixed -0.20 rad target kept building contact force
-        # after the box was already gripped.
-        result = self.close_until_contact()
-
-        if result != GraspResult.GRASPED and not self._weld_active:
-            success = False
-            for retry in range(1, MAX_GRASP_RETRIES + 1):
-                self.get_logger().warn(
-                    f'[grasp] {result} — retry {retry}/{MAX_GRASP_RETRIES}')
-                self.set_gripper(GRIPPER_OPEN, 'open')
-                if not self.go_pose(tx, ty, tz + HOVER, q, 'lift for retry'):
-                    break
-                if not self.go_pose(tx, ty, tz + GRASP_Z, q, f'grasp retry {retry}'):
-                    break
-                result = self.close_until_contact()
-                if result == GraspResult.GRASPED or self._weld_active:
-                    success = True
-                    break
-            if not success:
-                self.get_logger().error(
-                    f'[grasp] failed after {MAX_GRASP_RETRIES} retries ({result}) — aborting')
-                self.remove_table()
-                self.set_gripper(GRIPPER_OPEN, 'open')
-                self.go_named('ready')
-                return False
-
-        # Remove table collision so we can lift without phantom table-gripper collisions
+        # Remove table collision so the lift is not blocked by a phantom
+        # table-gripper collision. Done once, before the attempt loop.
         self.remove_table()
 
-        # Lift — retry 3× (OMPL can be flaky on the first attempt)
-        lifted = False
-        for attempt in range(3):
-            if self.go_pose(tx, ty, tz + HOVER, q, f'lift (try {attempt + 1})'):
-                lifted = True
+        # ── close → lift → VERIFY loop ──────────────────────────────────────
+        # Retries are now driven by the post-lift VISION check, not by the
+        # aperture classifier (which used the uncalibrated BOX_CONTACT_ANGLE and
+        # rejected physically-fine grasps — see close_until_contact's docstring).
+        # A retry therefore means "we lifted and the box was still on the table",
+        # which is real evidence, instead of "a guessed angle missed a window".
+        verified = False
+        result = None
+        attempt = 0
+        for attempt in range(1, MAX_GRASP_RETRIES + 2):
+            if attempt > 1:
+                self.get_logger().warn(
+                    f'[grasp] not verified — retry {attempt - 1}/{MAX_GRASP_RETRIES}')
+                self.attach(False)                      # drop any stale weld
+                self.set_gripper(GRIPPER_OPEN, 'open')
+                if not self.go_pose(tx, ty, tz + HOVER, q, 'hover for retry'):
+                    break
+                if not self.go_pose(tx, ty, tz + GRASP_Z, q, f'grasp retry {attempt - 1}'):
+                    break
+
+            # True box height BEFORE the close — the reference for the ground-truth
+            # lift check below.
+            z_before = self._box_world_z()
+
+            result = self.close_until_contact()
+
+            # Nothing was between the fingers — no point lifting or verifying.
+            if result == GraspResult.AIR:
+                self.get_logger().warn(
+                    '[grasp] AIR — gripper closed on nothing, skipping lift/verify')
+                verified = False
+                self._log_grasp_attempt(attempt, result, verified)
+                continue
+
+            # Lift — retry 3× (OMPL can be flaky on the first attempt)
+            lifted = False
+            for lift_try in range(3):
+                if self.go_pose(tx, ty, tz + HOVER, q, f'lift (try {lift_try + 1})'):
+                    lifted = True
+                    break
+                time.sleep(0.5)
+            if not lifted:
+                self.get_logger().warn('lift attempts failed — continuing anyway')
+
+            # Phase 0 — did the box actually leave the table?
+            # Preference order:
+            #   1. Gazebo ground truth (exact, sim only)
+            #   2. Vision (the only option on real hardware, but measured 45% error
+            #      on the lift displacement — see _box_world_z's docstring)
+            # Checked BEFORE retracting home, while the table is still in view.
+            if not lifted:
+                verified = False
+            else:
+                verified = self._verify_grasp_truth(z_before)
+                if verified is None:
+                    self.get_logger().info(
+                        '[verify] Gazebo state unavailable — falling back to vision')
+                    verified = self._verify_grasp_vision(tx, ty, tz, tol=0.04)
+            # Measure centring WHILE the box is still held up — the only moment the
+            # box is rigidly located relative to the gripper, so the offset is
+            # meaningful. Done before _log_grasp_attempt so the row carries it.
+            if verified:
+                self._measure_grasp_centering()
+
+            self._log_grasp_attempt(attempt, result, verified)
+            if verified:
+                self.get_logger().info(f'[grasp] VERIFIED on attempt {attempt}')
                 break
-            time.sleep(0.5)
-        if not lifted:
-            self.get_logger().warn('lift attempts failed — continuing to retract anyway')
+
+        if hasattr(self, '_current_cycle'):
+            # pick_success only trusts an explicit True — None (inconclusive) or
+            # False both leave it False, since neither is confirmed success.
+            self._current_cycle['pick_success'] = bool(verified)
+
+        if not verified:
+            self.get_logger().error(
+                f'[grasp] failed after {attempt} attempts (vision never confirmed '
+                f'the box left the table) — aborting')
+            self.attach(False)
+            self.set_gripper(GRIPPER_OPEN, 'open')
+            self.go_named('ready')
+            return False
 
         # Retract to home
         self.go_named('home')
@@ -1673,11 +2054,10 @@ class NavPickOrchestrator(Node):
         # ── FULL PIPELINE: pick → transport → dock → place (multi-level) ────────
         place_levels = max(1, int(self.get_parameter('place_stack_levels').value))
 
-        # 3 distinct boxes live on the pickup table (world: stack_box_0/1/2) — each
-        # is consumed (not recycled/teleported) as the stack grows. _claim_held_box
-        # identifies which physical box was actually grasped so metrics record the
-        # right box's landing pose.
-        self._remaining_boxes = ['stack_box_0', 'stack_box_1', 'stack_box_2']
+        # Single-box testing for now — stack_box_1/2 removed from final_map.world.
+        # Revert to ['stack_box_0', 'stack_box_1', 'stack_box_2'] once one-box
+        # grasping is reliable and multi-box stacking is re-enabled.
+        self._remaining_boxes = ['stack_box_0']
 
         # Level 0: first pick (robot is already docked at pickup table)
         self._cycle_begin(0)
