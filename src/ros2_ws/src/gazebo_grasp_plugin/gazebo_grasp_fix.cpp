@@ -153,6 +153,13 @@ class GazeboGraspFix : public ModelPlugin {
       int best_count = 0;
       for (const auto &kv : grip_count_) {
         if (kv.second >= grasp_count_threshold_ && kv.second > best_count) {
+          // Never weld to a STATIC model. Observed 2026-07-29: the fingers brush the
+          // table and the ground on the way in, and the plugin cheerfully welded the
+          // palm to 'pickup_table' and 'ground_plane' — which pins the whole arm to
+          // the world and is far worse than missing a grasp. Static models are scenery
+          // (ground, tables, walls); only free bodies are graspable.
+          physics::ModelPtr cand = world_->ModelByName(kv.first);
+          if (!cand || cand->IsStatic()) continue;
           best_count = kv.second;
           best_obj = kv.first;
         }

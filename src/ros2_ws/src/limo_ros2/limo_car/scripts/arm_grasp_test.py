@@ -102,7 +102,10 @@ GRASP_OFFSET = (0.015, 0.013, 0.010)
 # hovered OVER the box instead of straddling it.
 TOPDOWN_QUAT = (-0.7071, 0.0, 0.0, 0.7071)
 PRE_ABOVE   = 0.07                   # wrist hovers ~0.15 m (fingers well above the box)
-GRASP_ABOVE = 0.06                  # wrist ~0.11 m -> fingertips ~0.083 straddle the box's
+GRASP_ABOVE = 0.0    # TCP above box centre at grasp. 0 since 2026-08-01: gripper_tcp was
+                       # moved to the real grasp point (ackermann_with_sensor.xacro),
+                       # so the tool goes straight to the box centre. Was 0.06, which
+                       # was silently correcting for the TCP sitting on the palm.
                                      # UPPER part, ~1.3 cm clear of the table (avoids the
                                      # penetration explosion that launched the robot)
 

@@ -82,6 +82,11 @@ install(PROGRAMS scripts/test_place_arm.py
 install(PROGRAMS scripts/cam_track_pick_test.py
   RENAME cam_track_pick_test DESTINATION lib/${PROJECT_NAME})
 
+# grip_bench.py — isolated grasp test rig (grip_bench.launch.py). Teleports the box
+# between the fingers each trial so the grip is measured with zero centring error.
+install(PROGRAMS scripts/grip_bench.py
+  RENAME grip_bench DESTINATION lib/${PROJECT_NAME})
+
 # (mecanum_bridge.py intentionally NOT installed — it was only for the abandoned
 #  mecanum/planar_move drive; the diff-drive base needs no cmd_vel/odom bridge.)
 

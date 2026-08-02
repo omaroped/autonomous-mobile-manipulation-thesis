@@ -6,7 +6,12 @@ Robot: Agilex LIMO PRO (**differential drive**) + myCobot 280 M5 arm on Jetson O
 Goal: single-box pick → transport → place → stack at a fixed position, with Sim-to-Real
 error analysis.
 
-**NEW SESSION? Read `docs/HANDOFF_2026-07-29.md` first.** It covers where we are, the working
+**NEW SESSION? Read these three first, in order:**
+1. `docs/POSITIONING_ANALYSIS_2026-08-02.md` — current problem, measured numbers, options, recommendation
+2. `docs/experiment_log.md` — every run, pass and fail
+3. `docs/COMMANDS.md` — every command (run / kill / build / test)
+
+Then `docs/HANDOFF_2026-07-29.md` for background. It covers where we are, the working
 rules, every problem hit so far and how it was solved, and the exact next step. Then
 `docs/MASTER_STATUS_AND_PLAN_2026-07-28.md` — the single source of truth for status, the open
 regression, and the plan to submission.

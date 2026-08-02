@@ -124,7 +124,21 @@
        raise it if the box is grabbed on a glancing touch. -->
   <gazebo>
     <plugin filename="libgazebo_grasp_plugin.so" name="gazebo_grasp_fix">
-      <palm_link>gripper_base</palm_link>
+      <!-- MUST be a link that exists in GAZEBO, not merely in the URDF.
+           This was 'gripper_base' and silently broke every grasp: Gazebo's URDF->SDF
+           conversion merges a link joined by a FIXED joint into its parent, so
+           gripper_base is folded into joint6_flange and disappears as an addressable
+           link (visible as joint6_flange_fixed_joint_lump__gripper_base_visual_1 in
+           `gz model -m mbot -i`). The plugin loaded fine and counted contacts fine,
+           then failed at the last step every single time:
+               [Err] [gazebo_grasp_fix.cpp:195]
+               [GazeboGraspFix] palm link 'gripper_base' not found on model
+           AttachObject() returns there WITHOUT creating the joint, so the box was
+           held by friction alone and slid out of the fingers on every lift.
+           Verified 2026-07-29 against the live model, not assumed.
+           The finger links below are fine — gripper_left1/left3/right1/right3 all
+           survive as real links because they are joined by REVOLUTE joints. -->
+      <palm_link>joint6_flange</palm_link>
       <gripper_finger_link>gripper_left1</gripper_finger_link>
       <gripper_finger_link>gripper_left3</gripper_finger_link>
       <gripper_finger_link>gripper_right1</gripper_finger_link>

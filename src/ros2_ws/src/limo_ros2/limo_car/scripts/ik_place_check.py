@@ -37,7 +37,8 @@ Y_RANGE = [-0.07, -0.05, -0.03, 0.0, 0.03, 0.05, 0.07]
 # L=0 → 0.14, L=1 → 0.18, L=2 → 0.22
 Z_LEVELS = {0: 0.14, 1: 0.18, 2: 0.22}
 # Hover height (before descend) per level: + PLACE_HOVER(0.12)
-Z_HOVER_DELTA = 0.06    # PLACE_HOVER - GRASP_ABOVE = 0.12 - 0.06
+Z_HOVER_DELTA = 0.12    # PLACE_HOVER - GRASP_ABOVE = 0.12 - 0.0 (GRASP_ABOVE is 0
+                        # since the 2026-08-01 gripper_tcp calibration)
 
 # Tag yaw values to test (radians). 0 = tag facing straight ahead.
 # After Phase A alignment, residual yaw should be <5° — test a wider ±30° range.

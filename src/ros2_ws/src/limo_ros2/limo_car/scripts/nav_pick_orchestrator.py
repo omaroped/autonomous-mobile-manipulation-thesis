@@ -98,9 +98,30 @@ GRIPPER_OPEN  = [ 0.15,  0.15, -0.15, -0.15, -0.15,  0.15]
 GRIPPER_GRASP = [-0.20, -0.20,  0.20,  0.20,  0.20, -0.20]   # gentle partial close
 GRIPPER_TOPIC = '/mycobot_gripper_controller/commands'
 
-# Sim "weld" attaches the box rigidly to the gripper (a Gazebo grasp aid). True for sim;
-# set False to test whether the gripper physically holds the box (real-hardware mode).
-USE_WELD = True
+# ── How the box is held: REAL JOINT vs LEGACY WELD ───────────────────────────
+# Selected by the `use_physics_grasp` parameter (default True), which nav_pick.launch.py
+# also uses to decide whether to start grasp_attacher/smart_grasp — one flag, so the
+# node and the launch graph cannot disagree. Read into self._physics_grasp in __init__.
+#
+# PHYSICS GRASP (default, use_physics_grasp:=true)
+#   libgazebo_grasp_plugin (declared in gazebo/mycobot_ros2_control.xacro) creates a real
+#   ODE fixed joint between gripper_base and the box once enough finger contacts
+#   accumulate, and destroys it when gripper_controller opens past release_position (0.0).
+#   Nothing in this node commands the grasp: contact makes it, opening the fingers breaks
+#   it. `attach()` is therefore a no-op and `_weld_active` becomes an OBSERVATION
+#   ("ground truth says the box came off the table") rather than a command echo.
+#
+# LEGACY WELD (use_physics_grasp:=false)
+#   grasp_attacher.py teleports the box onto the gripper via /set_entity_state, triggered
+#   by this node publishing /grasp_attach. Kept as a working fallback — it produced the
+#   two successful end-to-end runs on 2026-07-02. Two known defects it cannot fix:
+#     1. it copies POSITION only (the box's orientation is frozen at pickup, so the box
+#        never rotates with the wrist), and
+#     2. it teleports at ~50 Hz against 1000 Hz physics, so the box lags and snaps.
+#
+# The two must NEVER run together — the teleport overwrites the pose the joint solver
+# just computed, every step.
+USE_WELD = True   # legacy default; overridden per-instance by use_physics_grasp
 
 # ── Aperture-based contact detection ─────────────────────────────────────────
 # BOX_CONTACT_ANGLE: run calibrate_contact_angle.py with the box at the grasp pose to
@@ -142,7 +163,10 @@ TOPDOWN_QUAT = (-0.7071, 0.0, 0.0, 0.7071)
 GRASP_OFFSET = (0.0, 0.013, 0.0)   # perception → grasp target offset (calibrated: x/z pulled to box centre; y kept)
 FIXED_BOX    = (0.28, 0.015, 0.08)     # fallback if perception unavailable
 PRE_ABOVE    = 0.07                    # TCP above box centre at pre-grasp
-GRASP_ABOVE  = 0.06                    # TCP above box centre at grasp
+GRASP_ABOVE  = 0.0    # TCP above box centre at grasp. 0 since 2026-08-01: gripper_tcp was
+                       # moved to the real grasp point (ackermann_with_sensor.xacro),
+                       # so the tool goes straight to the box centre. Was 0.06, which
+                       # was silently correcting for the TCP sitting on the palm.
 
 # Table collision in planning scene (add it so MoveIt routes around it)
 TABLE_SIZE     = (0.10, 0.32, 0.10)   # metres (world: 0.30×0.08×0.10; pad Y/X slightly)
@@ -159,6 +183,14 @@ STACK_Y_DEFAULT  = -0.12               # base_link y — offset to the side of t
 STACK_SURFACE_Z  =  0.06               # base_link z of the foundation surface top (table top)
 STACK_HOVER      =  0.10               # TCP hover above the current stack top before placing
 STOP_DISTANCE    =  0.24               # box distance from base_link at the pickup dock (arm reach limit)
+# Where the FINAL camera reading is taken, before the last short blind hop to the dock.
+# Chosen from geometry + observation: with the 0.14 m pickup table the WHOLE box is inside
+# the camera's vertical field of view down to 0.266 m (camera is 0.065 m up, looking level,
+# 22.8 deg of downward view). Below that the box slides off the bottom of the image.
+# 0.27 is the last distance where a reading is trustworthy; 0.24 is the furthest the arm can
+# actually reach. Measuring at 0.27 and driving the last 3 cm blind gives a 12x shorter blind
+# drive than the old single reading at ~0.60 m, so odometry drift has 12x less room to act.
+FINAL_READ_DIST  =  0.27
 STACK_COUNT_DEF  =  0                  # 0 = legacy single pick+backup; N>0 = stack N boxes
 
 # ── Place table — fiducial-guided docking ─────────────────────────────────────
@@ -257,6 +289,20 @@ class NavPickOrchestrator(Node):
         # Eliminates the need to hand-tune stack_surface_z for each new deployment.
         self._table_top_base_z = None
 
+        # Name of the box currently in the gripper — set by _claim_held_box(), which
+        # also removes it from _remaining_boxes. Keeps ground-truth queries pointed at
+        # the carried box. See _candidate_box_names().
+        self._held_box_name = None
+
+        # Which grasp mechanism is running — see the USE_WELD comment block at the top.
+        # Must match what nav_pick.launch.py started; the launch file passes the same
+        # value it used to gate grasp_attacher/smart_grasp.
+        self.declare_parameter('use_physics_grasp', True)
+        self._physics_grasp = bool(self.get_parameter('use_physics_grasp').value)
+        self.get_logger().info(
+            f'grasp mechanism = '
+            f'{"PHYSICS (libgazebo_grasp_plugin real fixed joint)" if self._physics_grasp else "LEGACY kinematic weld (grasp_attacher)"}')
+
         # ── Calibration knobs (live, tune with `ros2 param set` — NO relaunch) ──
         self.declare_parameter('grasp_off_x', GRASP_OFFSET[0])
         self.declare_parameter('grasp_off_y', GRASP_OFFSET[1])
@@ -273,7 +319,9 @@ class NavPickOrchestrator(Node):
         # the first then grasped at an empty spot (observed: iters 2-10 aborted in
         # under a second each).
         self.declare_parameter('box_name', 'stack_box_0')
-        self.declare_parameter('box_reset_xyz', [-2.0, 4.0, 0.12])  # where to respawn the box each iter
+        # z = pickup table top 0.14 + half box height 0.02 = 0.16 (table raised 2026-08-02
+        # so the box enters the camera's vertical field of view at grasp range).
+        self.declare_parameter('box_reset_xyz', [-2.0, 4.0, 0.16])
 
         # ── Stacking knobs (live, tune with `ros2 param set` — NO relaunch) ──────
         self.declare_parameter('stack_count', STACK_COUNT_DEF)   # >0 → stack this many boxes
@@ -378,9 +426,17 @@ class NavPickOrchestrator(Node):
         if best_name is None or best_z < HELD_Z_THRESH:
             held = self._remaining_boxes.pop(0)
             self.get_logger().warn(f'_claim_held_box: inconclusive query — assuming {held}')
+            self._held_box_name = held
             return held
         self._remaining_boxes.remove(best_name)
         self.get_logger().info(f'_claim_held_box: identified held box = {best_name} (z={best_z:.3f})')
+        # Remember it: this call REMOVES the box from _remaining_boxes, and every
+        # ground-truth helper (_box_world_pose, _box_world_z, _box_is_held) searches
+        # that list. Without this the carried box becomes invisible to them and they
+        # silently fall back to a hardcoded name list — which happens to start with
+        # 'stack_box_0' and so works by luck in the single-box case, but would query
+        # the WRONG box as soon as there is more than one.
+        self._held_box_name = best_name
         return best_name
 
     def _cycle_measure_placement(self, expected_x: float, expected_y: float,
@@ -671,8 +727,7 @@ class NavPickOrchestrator(Node):
         """
         if not self._get_state.service_is_ready():
             return None
-        names = list(getattr(self, '_remaining_boxes', None) or []) or \
-            ['stack_box_0', 'stack_box_1', 'stack_box_2', 'target_box', 'grasp_test_box']
+        names = self._candidate_box_names()
         for name in names:
             req = GetEntityState.Request()
             req.name = name
@@ -753,8 +808,7 @@ class NavPickOrchestrator(Node):
         """Full box position in the Gazebo world frame (sim ground truth), or None."""
         if not self._get_state.service_is_ready():
             return None
-        names = list(getattr(self, '_remaining_boxes', None) or []) or \
-            ['stack_box_0', 'stack_box_1', 'stack_box_2', 'target_box', 'grasp_test_box']
+        names = self._candidate_box_names()
         for name in names:
             req = GetEntityState.Request()
             req.name = name
@@ -764,6 +818,87 @@ class NavPickOrchestrator(Node):
             if fut.done() and fut.result() is not None and fut.result().success:
                 return fut.result().state.pose.position
         return None
+
+    def _candidate_box_names(self):
+        """Which Gazebo models the ground-truth helpers should query, best guess first.
+
+        Order matters — the helpers return the FIRST name that resolves:
+          1. the box we are currently carrying, if known. _claim_held_box() removes it
+             from _remaining_boxes, so without this entry the carried box is invisible
+             to every ground-truth query the moment it is claimed.
+          2. the boxes still waiting on the pickup table.
+          3. a hardcoded fallback, for paths that never populate either list
+             (calibration loops, isolated grasp tests).
+        """
+        names = []
+        held = getattr(self, '_held_box_name', None)
+        if held:
+            names.append(held)
+        names += [n for n in (getattr(self, '_remaining_boxes', None) or [])
+                  if n not in names]
+        if not names:
+            names = ['stack_box_0', 'stack_box_1', 'stack_box_2',
+                     'target_box', 'grasp_test_box']
+        return names
+
+    def _box_is_held(self, max_dist=0.06):
+        """Is the box STILL in the hand right now? Ground-truth distance from the box
+        to gripper_tcp.
+
+        Needed because _weld_active is a latched flag. Under the legacy weld that was
+        acceptable — the teleport could not fail, so "we welded it" implied "we still
+        have it". A real physics joint CAN break (contacts lost on a hard turn, the box
+        knocked out on the table edge), and a latched flag would happily report
+        transport_retained=True for a box lying on the floor 3 m back. Re-measuring at
+        arrival is the honest number, and drop-during-transport is a headline result of
+        the thesis, so it must not be faked.
+
+        Threshold: since gripper_tcp was calibrated to the real grasp point
+        (2026-08-01), a correctly held box now reads ~0.00 m from the TCP rather than
+        the old ~0.06 m, so the threshold could be tightened from 0.12 to 0.06 and still
+        leave 6 cm of margin. A dropped box (on the table or floor, arm in the travel
+        pose) is several times further, so the separation stays unambiguous. The measured
+        distance is logged every call so this can be replaced by a calibrated value from
+        N runs rather than staying a guess.
+
+        Returns True/False, or None if ground truth is unavailable (caller decides).
+        """
+        box_p = self._box_world_pose()
+        if box_p is None:
+            return None
+        try:
+            tf = self._tf_buf.lookup_transform('odom', TCP_LINK, rclpy.time.Time())
+        except Exception as e:
+            self.get_logger().warn(f'[held] TF odom→{TCP_LINK} unavailable: {e}')
+            return None
+        t = tf.transform.translation
+        dist = float(np.linalg.norm(
+            [box_p.x - t.x, box_p.y - t.y, box_p.z - t.z]))
+        held = dist <= max_dist
+        self.get_logger().info(
+            f'[held] box is {dist:.3f} m from {TCP_LINK} (limit {max_dist:.3f}) → '
+            f'{"STILL HELD" if held else "NOT HELD — box was lost"}')
+        return held
+
+    def _check_transport_retained(self):
+        """Did the box survive the drive to the place table? Sampled at ARRIVAL.
+
+        Also re-syncs _weld_active, so a box lost in transit correctly skips the place
+        step instead of the arm solemnly putting down nothing. Falls back to the latched
+        flag if ground truth is unavailable (real hardware), which is the old behaviour.
+        """
+        if self._physics_grasp:
+            held = self._box_is_held()
+            if held is not None:
+                if self._weld_active and not held:
+                    self.get_logger().error(
+                        '[transport] box was LOST in transit — the physics joint broke '
+                        'somewhere between the pickup table and here')
+                self._weld_active = bool(held)
+                return bool(held)
+            self.get_logger().warn(
+                '[transport] ground truth unavailable — reporting the latched grasp flag')
+        return self._weld_active
 
     def _verify_grasp_truth(self, z_before, min_rise=0.02):
         """Did the box actually leave the table? Compares true world Z before the
@@ -842,6 +977,44 @@ class NavPickOrchestrator(Node):
             f'nearest box {d_str} (tol {tol:.3f}) → '
             f'{"STILL THERE (failed)" if hit else "GONE (grasped)"}')
         return not hit
+
+    def _drive_forward(self, drive, d_start, timeout=25.0):
+        """Drive straight forward `drive` metres, measured by ODOMETRY, then hard stop.
+
+        Odometry rather than the camera, deliberately: a camera-feedback stop only fires
+        when forward AND lateral error settle at the same instant, which often never
+        happened — the robot crept into the table and climbed it. Distance driven is pure
+        geometry and stops every time.
+        """
+        if drive <= 0.001:
+            return
+        for _ in range(20):
+            rclpy.spin_once(self, timeout_sec=0.05)
+            if self._odom is not None:
+                break
+        ox, oy = self._odom if self._odom is not None else (0.0, 0.0)
+
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            rclpy.spin_once(self, timeout_sec=0.02)
+            disp = self._odom_dist_since(ox, oy)
+            disp = 0.0 if disp is None else disp
+            remaining = drive - disp
+            self.get_logger().info(
+                f'approach: driven {disp:.3f}/{drive:.3f} m  (box ≈ {d_start - disp:.3f} m)',
+                throttle_duration_sec=0.5)
+            if remaining <= 0.0:
+                self.get_logger().info(f'stop — {d_start - drive:.3f} m from the box')
+                break
+            t = Twist()
+            t.linear.x = max(0.06, min(0.14, 0.6 * remaining))   # ease off near the stop
+            self._cmd_vel_pub.publish(t)
+            time.sleep(0.05)
+        else:
+            self.get_logger().warn('approach timed out — stopping')
+
+        self._cmd_vel_pub.publish(Twist())
+        time.sleep(0.5)
 
     def visual_docking(self):
         """MECHANISM 1 — land, align, then approach (differential drive).
@@ -923,37 +1096,42 @@ class NavPickOrchestrator(Node):
             self._dock_box = None
             self.get_logger().warn(f'Phase B: no median reading — using d0={d0:.3f} m')
 
-        drive = max(0.0, d0 - STOP_DISTANCE)
+        # ── TWO-STAGE APPROACH (2026-08-02) ─────────────────────────────────
+        # STAGE 1: drive to FINAL_READ_DIST, where the box is still fully inside the
+        #          camera's vertical field of view.
+        # STAGE 2: take the FINAL reading there — the most accurate one available, from
+        #          the closest distance the camera can be trusted.
+        # STAGE 3: drive the last few centimetres blind to STOP_DISTANCE, the arm's reach.
+        #
+        # The old code took ONE reading at ~0.60 m and drove ~0.36 m blind, so every bit of
+        # odometry drift over that whole distance landed in the grasp target. Splitting it
+        # cuts the blind stretch to ~0.03 m.
+        stage1 = max(0.0, d0 - FINAL_READ_DIST)
         self.get_logger().info(
-            f'Phase B: box at {d0:.3f} m → driving {drive:.3f} m to stop at {STOP_DISTANCE:.2f} m')
+            f'Phase B stage 1: box at {d0:.3f} m → driving {stage1:.3f} m to the final '
+            f'reading point at {FINAL_READ_DIST:.2f} m')
+        self._drive_forward(stage1, d0)
 
-        # wait for a fresh odom sample, record the start point
-        for _ in range(20):
-            rclpy.spin_once(self, timeout_sec=0.05)
-            if self._odom is not None:
-                break
-        ox, oy = self._odom if self._odom is not None else (0.0, 0.0)
-
-        deadline = time.time() + 25.0
-        while time.time() < deadline:
-            rclpy.spin_once(self, timeout_sec=0.02)
-            disp = self._odom_dist_since(ox, oy)
-            disp = 0.0 if disp is None else disp
-            remaining = drive - disp
+        # ── STAGE 2: the final, best reading ────────────────────────────────
+        final = self.get_box_xyz(samples=6, timeout=6.0)
+        if final is not None:
+            self._dock_box = (STOP_DISTANCE, final[1], final[2])
+            self._table_top_base_z = final[2] - BOX_HALF_H
             self.get_logger().info(
-                f'approach: driven {disp:.3f}/{drive:.3f} m  (box ≈ {d0 - disp:.3f} m)',
-                throttle_duration_sec=0.5)
-            if remaining <= 0.0:
-                self.get_logger().info(
-                    f'HARD STOP — docked ~{STOP_DISTANCE:.2f} m from box, table not climbed')
-                break
-            t = Twist()
-            t.linear.x = clamp(0.6 * remaining, 0.06, 0.14)   # ease off near the stop
-            self._cmd_vel_pub.publish(t); time.sleep(0.05)
+                f'FINAL READING at {FINAL_READ_DIST:.2f} m: box at '
+                f'({final[0]:.4f}, {final[1]:+.4f}, {final[2]:.4f}) — this is the closest '
+                f'trustworthy measurement, and it sets the grasp target.')
         else:
-            self.get_logger().warn('approach timed out — stopping')
+            self.get_logger().warn(
+                'no final reading at the close point — keeping the earlier estimate. '
+                'The box may already be out of the camera frame; check the table height.')
 
-        self._cmd_vel_pub.publish(Twist()); time.sleep(0.5)
+        # ── STAGE 3: the last short blind hop ───────────────────────────────
+        stage2 = max(0.0, FINAL_READ_DIST - STOP_DISTANCE)
+        self.get_logger().info(
+            f'Phase B stage 3: driving the last {stage2:.3f} m blind to '
+            f'{STOP_DISTANCE:.2f} m (the arm reach limit)')
+        self._drive_forward(stage2, FINAL_READ_DIST)
 
         # ── Lateral re-fix AFTER the drive (added 2026-07-28) ─────────────────
         # WHY: _dock_box was frozen BEFORE this drive, so its y came from a
@@ -986,7 +1164,18 @@ class NavPickOrchestrator(Node):
         # Lateral y is unaffected by which face dominates — the top and front faces
         # share the same left-right centre — so y is safe to refresh, and y is
         # exactly the component the drive's yaw error corrupts.
-        if self._dock_box is not None:
+        # SUPERSEDED 2026-08-02 — kept behind a flag, not deleted.
+        # This whole re-fix existed to patch up a target that had been frozen ~0.76 m from
+        # the box. With the two-stage approach the target is now set from a reading taken at
+        # FINAL_READ_DIST (0.27 m), only ~3 cm before the dock, so there is almost no drive
+        # left for yaw error to corrupt.
+        #
+        # Worse, re-running it here would now do HARM. With the 0.14 m table the box centre
+        # leaves the camera's vertical field of view below 0.254 m — and this code runs at
+        # 0.24 m. Any reading it gets is of a box that is half out of frame, and it would
+        # overwrite the good 0.27 m measurement with a worse one.
+        USE_LEGACY_LATERAL_REFIX = False
+        if USE_LEGACY_LATERAL_REFIX and self._dock_box is not None:
             fresh = self._read_box_live_xyz()
             if fresh is not None:
                 y_old, z_keep = self._dock_box[1], self._dock_box[2]
@@ -994,10 +1183,7 @@ class NavPickOrchestrator(Node):
                 self._dock_box = (STOP_DISTANCE, y_new, z_keep)
                 self.get_logger().info(
                     f'[dock] lateral re-fix after drive: y {y_old:+.4f} → {y_new:+.4f} '
-                    f'(Δ{y_new - y_old:+.4f} m)  '
-                    f'[x held at STOP_DISTANCE={STOP_DISTANCE:.2f} — odometry, not depth; '
-                    f'z held at {z_keep:.4f} from the FAR reading — close-range z is '
-                    f'top-face biased]')
+                    f'(Δ{y_new - y_old:+.4f} m)')
             else:
                 self.get_logger().warn(
                     '[dock] no /box_pose for the lateral re-fix — keeping the '
@@ -1075,6 +1261,16 @@ class NavPickOrchestrator(Node):
     # ── Gripper helpers ───────────────────────────────────────────────────────
 
     def _weld_cb(self, msg: Bool):
+        """/grasp_attach echo — only meaningful in legacy weld mode.
+
+        Under physics grasp, _weld_active is set from GROUND TRUTH after the lift
+        (see grasp_and_retract), not from a topic. Ignoring the topic here also
+        makes the node immune to an orphaned grasp_attacher/smart_grasp left over
+        from an earlier run, which would otherwise flip the flag True and fake a
+        successful pick.
+        """
+        if getattr(self, '_physics_grasp', False):
+            return
         self._weld_active = msg.data
 
     def _gripper_joint_cb(self, msg: JointState):
@@ -1098,6 +1294,19 @@ class NavPickOrchestrator(Node):
             rclpy.spin_once(self, timeout_sec=duration / steps)
         self._last_gripper = list(values)
         self.get_logger().info(f'gripper → {label}')
+
+        # Under physics grasp, opening the fingers past the plugin's release_position
+        # IS the release — there is no "detach" call to make. Clearing the flag here
+        # catches every release path in this file (place, retry, abort, error) without
+        # having to touch each call site. RELEASE_POSITION mirrors <release_position>
+        # in gazebo/mycobot_ros2_control.xacro; keep the two in sync.
+        RELEASE_POSITION = 0.0
+        if self._physics_grasp and self._weld_active and values[0] > RELEASE_POSITION:
+            self._weld_active = False
+            self.get_logger().info(
+                f'[grasp] fingers opened to {values[0]:+.3f} > release_position '
+                f'{RELEASE_POSITION:+.3f} — physics joint released')
+
         time.sleep(0.3)
 
     def close_until_contact(self):
@@ -1207,7 +1416,10 @@ class NavPickOrchestrator(Node):
             return GraspResult.AIR
 
         result = GraspResult.GRASPED
-        if not self._weld_active and USE_WELD:
+        # Legacy weld only: fire the teleport now that the fingers are closed. Under
+        # physics grasp the joint was already created by the finger contacts during
+        # the close loop above — there is nothing to trigger here.
+        if not self._weld_active and USE_WELD and not self._physics_grasp:
             self.attach(True)
 
         # Back off 1 step to remove contact force — prevents ODE "explosion"
@@ -1238,6 +1450,24 @@ class NavPickOrchestrator(Node):
         return GraspResult.AIR  # stalled narrower than expected
 
     def attach(self, on: bool):
+        """Command the LEGACY kinematic weld on/off.
+
+        Under physics grasp this is a deliberate NO-OP. The plugin owns the joint:
+        it is created by finger contact and destroyed when gripper_controller opens
+        past release_position — neither is commandable over a topic. Every
+        `attach(False)` call site in this file is already followed by
+        `set_gripper(GRIPPER_OPEN, ...)`, which IS the release under physics, so the
+        call sites stay correct in both modes and did not need rewriting.
+
+        Publishing anyway would be worse than useless: if a stale grasp_attacher from
+        a previous run is still alive (a documented failure mode — see kill_sim.sh),
+        the message would restart the teleport and it would fight the joint.
+        """
+        if self._physics_grasp:
+            self.get_logger().debug(
+                f'attach({on}) ignored — physics grasp: contact makes the joint, '
+                f'opening the fingers breaks it')
+            return
         msg = Bool()
         msg.data = bool(on)
         self._attach_pub.publish(msg)
@@ -1262,7 +1492,16 @@ class NavPickOrchestrator(Node):
         return c
 
     @staticmethod
-    def _pose_constraints(x, y, z, quat, pos_tol=0.025, ori_tol=0.1):
+    def _pose_constraints(x, y, z, quat, pos_tol=0.01, ori_tol=0.1):
+        """pos_tol is the RADIUS of the sphere MoveIt must land the TCP inside.
+
+        Was 0.025 (2.5 cm) — larger than the box is wide (3.5 cm). MoveIt could
+        legitimately stop 2.5 cm below the commanded grasp point and still report
+        SUCCESS, which is enough to drive the fingers into the tabletop or to miss
+        the box sideways. Tightened to 0.01 (1 cm) on 2026-07-31.
+        Trade-off: a tighter goal is harder to solve, so watch for IK/planning
+        failures. If planning starts failing, loosen it rather than accept a miss.
+        """
         c = Constraints()
         target = Pose()
         target.position = Point(x=float(x), y=float(y), z=float(z))
@@ -1394,8 +1633,14 @@ class NavPickOrchestrator(Node):
         """
         self.get_logger().info('=== Steps 4–5: Iterative top-down grasp ===')
         q = TOPDOWN_QUAT
-        HOVER      = 0.12     # TCP this far above box centre while aligning
-        GRASP_Z    = GRASP_ABOVE   # calibrated grasp height (0.06 above centre)
+        # Clearance above the box before descending, and the height the lift returns to.
+        # REDUCED 0.12 -> 0.06 on 2026-08-02. The wrist+gripper stack is 213 mm long and
+        # must hang straight down from the elbow, so every centimetre of clearance forces
+        # the elbow higher — and with the pickup table raised to 0.14 m the elbow runs out
+        # of room. Measured: 0.12 makes the hover pose unplannable at the 0.24 m dock
+        # ("[hover] FAILED"), while 0.06 plans fine and still clears the table.
+        HOVER      = 0.06
+        GRASP_Z    = GRASP_ABOVE   # 0.0 — gripper_tcp IS the grasp point (calibrated)
         STABLE_TOL = 0.012   # estimate "settled" when it shifts < 1.2 cm
         MAX_ITERS  = 3
 
@@ -1412,8 +1657,19 @@ class NavPickOrchestrator(Node):
         # At the dock the base camera OVER-READS the distance, so re-perceiving here
         # would push the goal past the arm's reach and make IK fail (the bug we hit).
         # The odometry-measured dock distance is the reliable target, so we trust it.
-        if not self.go_pose(tx, ty, tz + HOVER, q, 'hover'):
-            self.get_logger().error('hover pose failed — aborting')
+        # Try decreasing clearances rather than aborting on the first failure: "unreachable"
+        # here usually means "too high", not "too far", and a lower hover still works.
+        hovered = False
+        for clearance in (HOVER, 0.045, 0.03):
+            if self.go_pose(tx, ty, tz + clearance, q, f'hover {clearance:.3f} m'):
+                hovered = True
+                if clearance < HOVER:
+                    self.get_logger().warn(
+                        f'hover reduced to {clearance:.3f} m — headroom is tight at this '
+                        f'table height and dock distance')
+                break
+        if not hovered:
+            self.get_logger().error('no reachable hover above the box — aborting')
             return False
 
         # ── descend straight down to the grasp point ────────────────────────
@@ -1461,11 +1717,11 @@ class NavPickOrchestrator(Node):
 
             # Lift — retry 3× (OMPL can be flaky on the first attempt)
             lifted = False
-            for lift_try in range(3):
-                if self.go_pose(tx, ty, tz + HOVER, q, f'lift (try {lift_try + 1})'):
+            for clearance in (HOVER, 0.045, 0.03):
+                if self.go_pose(tx, ty, tz + clearance, q, f'lift {clearance:.3f} m'):
                     lifted = True
                     break
-                time.sleep(0.5)
+                time.sleep(0.3)
             if not lifted:
                 self.get_logger().warn('lift attempts failed — continuing anyway')
 
@@ -1483,6 +1739,16 @@ class NavPickOrchestrator(Node):
                     self.get_logger().info(
                         '[verify] Gazebo state unavailable — falling back to vision')
                     verified = self._verify_grasp_vision(tx, ty, tz, tol=0.04)
+
+            # ── PHYSICS GRASP: this is where _weld_active gets its value ────────
+            # In legacy weld mode the flag echoed our own /grasp_attach command, so it
+            # only ever meant "we asked for a weld" — it was True even when the fingers
+            # had closed on air. With a real joint there is no command to echo, so the
+            # flag is redefined as an OBSERVATION: the box measurably left the table.
+            # That is strictly more honest, and it is what gates the place step and
+            # feeds pick_success in the metrics CSV.
+            if self._physics_grasp:
+                self._weld_active = bool(verified)
             # Measure centring WHILE the box is still held up — the only moment the
             # box is rigidly located relative to the gripper, so the offset is
             # meaningful. Done before _log_grasp_attempt so the row carries it.
@@ -1525,9 +1791,10 @@ class NavPickOrchestrator(Node):
 
         Top-down placement at the hardcoded foundation (stack_x, stack_y). The resting
         surface for this box is the foundation top plus `level` full box heights, so each
-        box lands on the one below. We mirror the grasp geometry: at grasp the TCP sat
-        GRASP_ABOVE above the box centre, so to rest the box bottom on the surface the TCP
-        target is surface + BOX_HALF_H + GRASP_ABOVE. Hover → descend → release → lift.
+        box lands on the one below. We mirror the grasp geometry: the TCP is the point
+        the box is held at, so to rest the box bottom on the surface the TCP target is
+        surface + BOX_HALF_H + GRASP_ABOVE — and GRASP_ABOVE is now 0, i.e. the tool goes
+        to where the box centre must end up. Hover → descend → release → lift.
 
         Assumes the box is still held (welded or gripped) and the arm is at 'home'.
         """
@@ -1550,7 +1817,10 @@ class NavPickOrchestrator(Node):
             self.get_logger().error('stack place failed — aborting place')
             return False
 
-        # Release: drop the weld first (if used) so physics takes over, then open fingers.
+        # Release. Legacy weld: drop the teleport first so physics takes over, then open.
+        # Physics grasp: opening the fingers past release_position destroys the joint, so
+        # set_gripper alone is the release (attach() is a no-op and set_gripper clears
+        # _weld_active).
         if USE_WELD:
             self.attach(False)
         self.set_gripper(GRIPPER_OPEN, 'release')
@@ -2089,9 +2359,10 @@ class NavPickOrchestrator(Node):
         result_str = f'OK  drop={self._latched_drop}' if nav_ok else 'FAILED'
         self.get_logger().info(f'navigate_to_place_table → {result_str}')
         self._current_cycle['dock_via_tag'] = (nav_ok and self._latched_drop is not None)
-        # Sample the weld state at ARRIVAL (not departure) — honest measure of
-        # whether the grasp actually survived transport.
-        self._current_cycle['transport_retained'] = self._weld_active
+        # Sample at ARRIVAL (not departure) — honest measure of whether the grasp
+        # actually survived transport. Under physics grasp this RE-MEASURES ground
+        # truth rather than reading a latched flag, because a real joint can break.
+        self._current_cycle['transport_retained'] = self._check_transport_retained()
 
         if not nav_ok:
             self.get_logger().error('Place dock failed — aborting')
@@ -2161,7 +2432,7 @@ class NavPickOrchestrator(Node):
             self._backup_from_table(4.0)
 
             nav_ok2 = self.navigate_to_place_table()
-            self._current_cycle['transport_retained'] = self._weld_active
+            self._current_cycle['transport_retained'] = self._check_transport_retained()
             self._current_cycle['dock_via_tag'] = nav_ok2 and self._latched_drop is not None
             if not nav_ok2:
                 self.get_logger().error('Re-nav to place table failed — stopping stack')

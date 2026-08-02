@@ -64,7 +64,10 @@ PLACE_X     =  0.240
 PLACE_Y     =  0.003
 PLACE_Z_BOX = -0.021   # box centre z in base_link when resting on table
 HOVER_ABOVE =  0.10    # TCP above box centre during approach hover
-PLACE_ABOVE =  0.06    # TCP above box centre at release point (= pick GRASP_ABOVE)
+PLACE_ABOVE =  0.0    # TCP above box centre at grasp. 0 since 2026-08-01: gripper_tcp was
+                       # moved to the real grasp point (ackermann_with_sensor.xacro),
+                       # so the tool goes straight to the box centre. Was 0.06, which
+                       # was silently correcting for the TCP sitting on the palm.
 
 # Gripper
 GRIPPER_OPEN  = [ 0.15,  0.15, -0.15, -0.15, -0.15,  0.15]

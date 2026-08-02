@@ -206,15 +206,35 @@
       </link>
     </model>
     <!-- Pickup table: 30x15cm, 10cm tall. Narrow in Y so robot front clears it at 0.17m stop. -->
+    <!-- PICKUP TABLE — scaled +40% on 2026-08-02 (was 0.3 x 0.08 x 0.10, top at 0.10).
+         WHY: the depth camera is mounted 0.065 m above base_link looking straight
+         forward, and the box is a 4 cm cube. At the 0.24 m dock the box sat 31.6 deg
+         below the camera axis while the camera only sees 22.8 deg down — the box was
+         BELOW THE BOTTOM EDGE OF THE IMAGE, not merely too close.
+         HEIGHT ONLY: 0.10 -> 0.14 (+40%). Footprint stays 0.3 x 0.08.
+         Chosen so the WHOLE box is visible from 0.266 m, which matches the distance
+         observed by hand (~0.27 m) as the last point the camera sees all of it.
+         CHOSEN DELIBERATELY over the alternatives: the real camera cannot be tilted or
+         re-mounted, so raising the workpiece is the only way to bring the box into the
+         camera's vertical field of view at grasp range. At this height the box sits
+         14.4 deg below the camera axis at a 0.24 m dock, against 22.8 deg of downward
+         view — comfortably in frame, where at the original 0.10 m table it was 32.7 deg
+         below and therefore off the bottom of the image entirely.
+         KNOWN COST: it consumes vertical headroom above the box, so the lift must be
+         kept short (see grip_bench's degrading lift). Grasp reliability measured 2/3 at
+         this height against 5/5 at 0.10 m — recovering that is an open task.
+         NOTE: this does NOT improve reach. The measured envelope (reach_map.csv) is
+         0.24 m at every height from -0.04 to +0.08 in base_link, dropping to 0.22 at
+         +0.10, so the arm limit is unchanged. -->
     <model name='pickup_table'>
       <static>1</static>
-      <pose>-2 4 0.05 0 0 0</pose>
+      <pose>-2 4 0.07 0 0 0</pose>
       <link name='link'>
         <collision name='col'>
-          <geometry><box><size>0.3 0.08 0.1</size></box></geometry>
+          <geometry><box><size>0.3 0.08 0.14</size></box></geometry>
         </collision>
         <visual name='vis'>
-          <geometry><box><size>0.3 0.08 0.1</size></box></geometry>
+          <geometry><box><size>0.3 0.08 0.14</size></box></geometry>
           <material>
             <ambient>0.6 0.4 0.2 1</ambient>
             <diffuse>0.6 0.4 0.2 1</diffuse>
@@ -341,7 +361,9 @@
          The mesh is kept for VISUAL only, so the box still looks the same.
          If this restores success, the mesh collision was the regression. -->
     <model name='stack_box_0'>
-      <pose>-2.00 4 0.12 0 0 0</pose>
+      <!-- z = table top 0.14 + half box height 0.02 = 0.16.
+           base_link sits at world 0.145, so the box centre is at base_link z = +0.015. -->
+      <pose>-2.00 4 0.16 0 0 0</pose>
       <link name='link'>
         <inertial>
           <mass>0.04</mass>

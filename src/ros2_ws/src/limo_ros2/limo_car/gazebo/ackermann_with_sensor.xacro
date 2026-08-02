@@ -72,7 +72,25 @@
          frame: no visual/collision/inertial, so Gazebo treats it as TF only. -->
     <link name="gripper_tcp"/>
     <joint name="gripper_base_to_tcp" type="fixed">
-        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <!-- CALIBRATED 2026-08-01. Was xyz="0 0 0", i.e. the TCP sat on the palm and
+             the URDF admitted it: "the real fingertip offset is calibrated visually in
+             Stage 1". Stage 1 never happened, so every grasp height in the project
+             carried a hidden +0.06 correction (GRASP_ABOVE) to reach past the fingers.
+
+             +y is the finger axis (straight down in a top-down grasp). Two measurements
+             fix the value:
+               - TF gripper_tcp -> gripper_left1 / gripper_right1 puts the fingertip
+                 LINK midpoint at (+0.0001, +0.0255, 0) m — the knuckle line.
+               - Empirically, commanding the old TCP to (box centre + 0.060) grips the
+                 box 5/5, which means the box centre comes to rest exactly 0.060 m down
+                 the finger axis. That is the real grasp point, so that is where the TCP
+                 belongs.
+
+             gripper_tcp now means "the point where the box is gripped", so GRASP_ABOVE
+             drops to 0.0 everywhere. The two changes cancel exactly — the arm reaches
+             the identical physical pose — but every height in the code becomes readable
+             and the reach envelope is measured at the point that actually matters. -->
+        <origin xyz="0 0.06 0" rpy="0 0 0"/>
         <parent link="gripper_base"/>
         <child link="gripper_tcp"/>
     </joint>

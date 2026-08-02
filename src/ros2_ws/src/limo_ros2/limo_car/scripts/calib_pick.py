@@ -57,7 +57,10 @@ BOX_BASE_Y = 0.000   # start centred; tune y with grasp_off_y
 BOX_BASE_Z = -0.021
 
 HOVER_ABOVE = 0.12   # TCP above box Z during hover
-GRASP_ABOVE = 0.06   # TCP above box Z at grasp moment
+GRASP_ABOVE = 0.0    # TCP above box centre at grasp. 0 since 2026-08-01: gripper_tcp was
+                       # moved to the real grasp point (ackermann_with_sensor.xacro),
+                       # so the tool goes straight to the box centre. Was 0.06, which
+                       # was silently correcting for the TCP sitting on the palm.
 LIFT_ABOVE  = 0.16   # TCP above box Z during lift (verify phase)
 
 # ── Gripper ───────────────────────────────────────────────────────────────────

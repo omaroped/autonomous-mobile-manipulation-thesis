@@ -6,7 +6,7 @@ Starts (in dependency order):
   2. MoveIt move_group  (moveit.launch.py)
   3. Nav2 stack         (nav2_limo.launch.py — map, AMCL, planner, controller)
   4. box_pose_estimator (perception → /box_pose)
-  5. grasp_attacher     (weld service)
+  5. grasp_attacher     (LEGACY kinematic weld — only if use_physics_grasp:=false)
   6. base_pin           (Gazebo pose-hold service)
   7. nav_pick_orchestrator (the mission node — waits for everything above)
 
@@ -22,6 +22,7 @@ from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument, IncludeLaunchDescription, TimerAction, SetLaunchConfiguration
 )
+from launch.conditions import UnlessCondition
 from launch.substitutions import LaunchConfiguration
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
@@ -40,6 +41,7 @@ def generate_launch_description():
     place_stack_levels = LaunchConfiguration('place_stack_levels', default='1')
     dock_range = LaunchConfiguration('dock_range', default='0.15')
     metrics_csv = LaunchConfiguration('metrics_csv', default='')
+    use_physics_grasp = LaunchConfiguration('use_physics_grasp', default='true')
 
     # ── Argument declarations ─────────────────────────────────────────────────
     spawn_y_arg = DeclareLaunchArgument(
@@ -77,6 +79,17 @@ def generate_launch_description():
     metrics_csv_arg = DeclareLaunchArgument(
         'metrics_csv', default_value='',
         description='Path for the per-cycle metrics CSV. Empty = auto-name under data/.')
+
+    use_physics_grasp_arg = DeclareLaunchArgument(
+        'use_physics_grasp', default_value='true',
+        description='true  = grasping is done by libgazebo_grasp_plugin (a REAL ODE fixed '
+                    'joint created on finger contact, released when the gripper opens past '
+                    'release_position). grasp_attacher and smart_grasp are NOT started.\n'
+                    'false = legacy kinematic weld: grasp_attacher teleports the box to '
+                    'follow the gripper via /set_entity_state, driven by /grasp_attach.\n'
+                    'The two mechanisms MUST NOT run together — the teleport fights the '
+                    'joint solver. This one flag switches both the launch graph and the '
+                    "orchestrator's release logic, so they cannot disagree.")
 
     # Preserve the real top-level use_rviz BEFORE the gazebo include can touch it.
     # ackermann_gazebo.launch.py declares its OWN 'use_rviz' argument too, and the
@@ -150,9 +163,19 @@ def generate_launch_description():
                 'table_top_z': 0.10,    # table top height above ground in metres
             }])])
 
-    # ── 5. grasp_attacher — delay 15 s ───────────────────────────────────────
+    # ── 5. grasp_attacher — LEGACY, only when use_physics_grasp:=false ───────
+    #    The kinematic weld. Superseded by libgazebo_grasp_plugin (declared in
+    #    gazebo/mycobot_ros2_control.xacro), which makes a real ODE fixed joint.
+    #    Kept as a working fallback, NOT deleted: if the physics joint misbehaves,
+    #    `use_physics_grasp:=false` restores the exact pipeline that produced the
+    #    two successful runs on 2026-07-02.
+    #
+    #    Why it cannot run alongside the plugin: it calls /set_entity_state at
+    #    ~50 Hz to teleport the box onto the gripper, while ODE solves the fixed
+    #    joint at 1000 Hz. Both would write the box pose every step and fight.
     grasp_attacher = TimerAction(
         period=15.0,
+        condition=UnlessCondition(use_physics_grasp),
         actions=[Node(
             package='limo_car',
             executable='grasp_attacher',
@@ -160,12 +183,14 @@ def generate_launch_description():
             output='screen',
             parameters=[{'use_sim_time': True}])])
 
-    # ── 6. smart_grasp — delay 15 s (GazeboGraspFix equivalent in Python) ────
-    #    Monitors contact sensors on gripper_left1 + gripper_right1.
-    #    Auto-publishes /grasp_attach True when both fingers simultaneously
-    #    touch the target box, False when gripper opens.  Replaces manual weld.
+    # ── 6. smart_grasp — LEGACY, only when use_physics_grasp:=false ──────────
+    #    Watches the finger contact sensors and publishes /grasp_attach True when
+    #    both fingers touch — i.e. it is the *trigger* for the weld above, and is
+    #    meaningless without it. The C++ plugin does contact detection internally
+    #    (grasp_count_threshold), so this node is redundant under physics grasp.
     smart_grasp = TimerAction(
         period=15.0,
+        condition=UnlessCondition(use_physics_grasp),
         actions=[Node(
             package='limo_car',
             executable='smart_grasp',
@@ -185,7 +210,12 @@ def generate_launch_description():
                           'calib_loops': ParameterValue(calib_loops, value_type=int),
                           'place_stack_levels': ParameterValue(place_stack_levels, value_type=int),
                           'dock_range': ParameterValue(dock_range, value_type=float),
-                          'metrics_csv': metrics_csv}])])
+                          'metrics_csv': metrics_csv,
+                          # Same flag that gates the two legacy nodes above, so the
+                          # orchestrator's release logic can never disagree with which
+                          # grasp mechanism is actually running.
+                          'use_physics_grasp': ParameterValue(
+                              use_physics_grasp, value_type=bool)}])])
 
     return LaunchDescription([
         spawn_y_arg,
@@ -196,6 +226,7 @@ def generate_launch_description():
         place_stack_levels_arg,
         dock_range_arg,
         metrics_csv_arg,
+        use_physics_grasp_arg,
         preserve_use_rviz,
         gazebo,
         moveit_launch,
