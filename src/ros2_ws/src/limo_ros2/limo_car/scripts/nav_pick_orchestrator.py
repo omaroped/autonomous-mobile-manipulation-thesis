@@ -1990,6 +1990,16 @@ class NavPickOrchestrator(Node):
         if tag_seen:
             self.get_logger().info(f'Phase C: approaching to {dock_range:.2f} m…')
             deadline = time.time() + 30.0
+            # Stall guard. If dock_range is set below what the chassis can
+            # physically reach (bumper is 0.189 m ahead of base_link), `remaining`
+            # never hits zero and this loop drives the wheels into the table for
+            # the whole 30 s — which is exactly what a dock_range of 0.15 did,
+            # slipping the wheels and corrupting the odometry the drop point is
+            # computed from. Bail out as soon as the range stops improving.
+            STALL_EPS  = 0.005   # m of progress that counts as "still moving"
+            STALL_SEC  = 2.0     # no progress for this long → we are blocked
+            best_range = float('inf')
+            last_gain  = time.time()
             while time.time() < deadline:
                 t = self._read_tag_live()
                 if t is None:
@@ -2004,6 +2014,17 @@ class NavPickOrchestrator(Node):
                     throttle_duration_sec=0.5)
                 if remaining <= 0.0:
                     self.get_logger().info(f'Phase C: docked at range={tag_range:.3f} m ✓')
+                    break
+                # ── stall guard (see STALL_EPS above) ────────────────────────
+                if tag_range < best_range - STALL_EPS:
+                    best_range = tag_range
+                    last_gain  = time.time()
+                elif time.time() - last_gain > STALL_SEC:
+                    self.get_logger().warn(
+                        f'Phase C: STALLED at range={tag_range:.3f} m (target '
+                        f'{dock_range:.3f} m) — no progress for {STALL_SEC:.0f} s. '
+                        f'The chassis cannot get closer; stopping here rather than '
+                        f'grinding the wheels.')
                     break
                 cmd = Twist()
                 cmd.linear.x  = clamp(PLACE_DOCK_K_FWD * remaining,

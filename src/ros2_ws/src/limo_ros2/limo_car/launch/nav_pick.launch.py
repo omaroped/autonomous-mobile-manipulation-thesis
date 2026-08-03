@@ -39,7 +39,7 @@ def generate_launch_description():
     drive_mode = LaunchConfiguration('drive_mode', default='diff')
     calib_loops = LaunchConfiguration('calib_loops', default='0')
     place_stack_levels = LaunchConfiguration('place_stack_levels', default='1')
-    dock_range = LaunchConfiguration('dock_range', default='0.15')
+    dock_range = LaunchConfiguration('dock_range', default='0.20')
     metrics_csv = LaunchConfiguration('metrics_csv', default='')
     use_physics_grasp = LaunchConfiguration('use_physics_grasp', default='true')
 
@@ -72,9 +72,12 @@ def generate_launch_description():
                     '(the world has 3 distinct stack_box_N boxes on the pickup table).')
 
     dock_range_arg = DeclareLaunchArgument(
-        'dock_range', default_value='0.15',
-        description='AprilTag dock stop distance (m) — tuned so latched drop-x '
-                    '(dock_range + table_side/2) lands within arm reach (STOP_DISTANCE).')
+        'dock_range', default_value='0.20',
+        description='AprilTag dock stop distance (m). HARD FLOOR ~0.197: the front '
+                    'bumper is 0.189 m ahead of base_link, so with the tag on the '
+                    'table face the robot physically cannot get closer. The old '
+                    '0.15 was unreachable — Phase C ground the wheels against the '
+                    'table for the full 30 s timeout every run.')
 
     metrics_csv_arg = DeclareLaunchArgument(
         'metrics_csv', default_value='',
