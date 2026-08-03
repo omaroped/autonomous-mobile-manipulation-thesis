@@ -303,7 +303,10 @@ die Raedern und Steuerscharnier im vorderen Achse, und auch die hinten Raedern. 
                 <wheel_diameter>0.09</wheel_diameter>        <!-- 2 × 0.045 m radius -->
                 <wheel_diameter>0.09</wheel_diameter>
                 <max_wheel_torque>20</max_wheel_torque>
-                <max_wheel_acceleration>1.0</max_wheel_acceleration>
+                <!-- 1.0 rad/s^2 was a ~1 s ramp to reach even 0.5 rad/s of body
+                     rotation, so short docking corrections never reached their
+                     commanded speed. Raised so the base responds promptly. -->
+                <max_wheel_acceleration>5.0</max_wheel_acceleration>
                 <command_topic>cmd_vel</command_topic>
                 <publish_odom>true</publish_odom>
                 <publish_odom_tf>true</publish_odom_tf>

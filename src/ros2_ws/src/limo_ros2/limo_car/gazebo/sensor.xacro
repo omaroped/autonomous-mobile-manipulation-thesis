@@ -49,8 +49,18 @@ um die Erstellung der weitere Simulation fuer Sensoren in Gazebo ermoeglichen. -
                         <horizontal>
                             <samples>720</samples>
                             <resolution>1</resolution>
-                            <min_angle>-2.09439510</min_angle> <!-- ±120° (240° forward arc). Rear 120° cut to avoid self-scanning the chassis/arm. Ref: limo_gazebo.gazebo in omaroped/workSPACELIMO. Original bad agent set this to ±180° (full 360°) which caused the robot to scan its own body. -->
-                            <max_angle>2.09439510</max_angle>
+                            <!-- ±100° (200° forward arc), MEASURED on the real robot 2026-08-03.
+                                 A cover plate sits directly behind the centred lidar and blocks
+                                 the rear symmetrically; scanning at full 360° with range_min 0.02
+                                 showed self-hits (0.02–0.10 m) from +96.9° outward. ±100° is the
+                                 conservative crop: over-cropping loses rear sensing, under-cropping
+                                 puts phantom obstacles in the costmap and stops the robot.
+                                 Was ±120° (2.09439510) taken from a reference config, never
+                                 measured — that would have seen the plate. Real hardware must
+                                 match: ydlidar_ros2_driver/params/limo_tminipro.yaml.
+                                 See docs/troubleshooting_lidar_no_scan.md. -->
+                            <min_angle>-1.74532925</min_angle>
+                            <max_angle>1.74532925</max_angle>
                         </horizontal>
                     </scan>
                     <range>

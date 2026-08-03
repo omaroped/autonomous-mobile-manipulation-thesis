@@ -204,10 +204,22 @@ NAV_PLACE_Y    = -0.50       # Nav2 goal well away from table inflation zone.
 NAV_PLACE_YAW  = -1.5708    # -π/2: robot faces -Y (toward the table face)
 
 # Closed-loop dock parameters (dock_to_tag)
-# dock_range + table_side/2 (0.09 m) must land <= STOP_DISTANCE (0.24 m) so the
-# arm reaches the true table centre without the px=min(px, STOP_DISTANCE) clamp
-# in place_box() silently shifting the drop point off-centre. 0.15+0.09=0.24 exactly.
-PLACE_DOCK_RANGE   = 0.15   # stop when tag is this far from base_link (m)
+#
+# HARD GEOMETRIC LIMIT: the robot's front bumper is 0.189 m ahead of base_link
+# (measured from meshes/limo_base_collision_meters.stl, which is mounted with a
+# +pi/2 yaw, so the mesh's Y extent is the robot's X). Any commanded stop that
+# puts the table's near face closer than that is physically unreachable — the
+# robot jams against the table and the approach loop spins the wheels until it
+# times out. This is exactly what the old 0.18 m-deep place table did.
+#
+#   place table depth 0.10 m  → near face  0.05 m from its centre
+#   tag plate                 → 0.051 m from its centre
+#   table centre at           → 0.25 m from base_link (PLACE_MAP_Y_DOCK = -1.75)
+#   ⇒ near face at 0.200 m, bumper at 0.189 m  → 0.011 m clearance ✓
+#   ⇒ tag at 0.199 m  → PLACE_DOCK_RANGE below
+#
+# Same 0.011 m clearance as the proven pickup table (0.08 m deep, box at 0.24 m).
+PLACE_DOCK_RANGE   = 0.20   # stop when tag is this far from base_link (m)
 # Map-pos approach: drive until map_y ≤ this value.
 # Table centre at map (-4,-2).  Want table at x≈0.25 in base_link.
 # Robot at map_y = -2.0 + 0.25 = -1.75  →  PLACE_MAP_Y_DOCK = -1.75
@@ -218,7 +230,12 @@ PLACE_DOCK_YAW_TOL = 0.04   # Phase A: heading tight enough to start Phase C (ra
 PLACE_DOCK_BEAR_TOL= 0.04   # Phase A: tag bearing tolerance (rad)
 PLACE_DOCK_K_ROT   = 2.0    # Phase A/C rotation gain (rad/s per rad error)
 PLACE_DOCK_K_FWD   = 0.8    # Phase C forward gain (m/s per m range error)
-PLACE_DOCK_MAX_ROT = 0.40   # max rotation speed (rad/s)
+PLACE_DOCK_MAX_ROT = 0.80   # max rotation speed (rad/s)
+# Minimum turn rate for Phase A (rotate in place). Proportional control alone
+# commands 2.0*0.04 = 0.08 rad/s (4.6 deg/s) at the tolerance, so the last few
+# degrees crawl. NOT applied in Phase C, where angular.z is a steering trim
+# while driving — a floor there would make the robot weave.
+PLACE_DOCK_MIN_ROT = 0.25
 PLACE_DOCK_MIN_FWD = 0.05   # min forward speed during approach (m/s)
 PLACE_DOCK_MAX_FWD = 0.12   # max forward speed during approach (m/s)
 
@@ -1039,6 +1056,12 @@ class NavPickOrchestrator(Node):
         K_ROT    = 1.8      # rotation gain  (rad/s per m of lateral error)
         K_FWD    = 0.8      # forward gain   (m/s per m of distance error)
         MAX_ROT  = 0.5
+        # Minimum turn rate while OUTSIDE tolerance. Pure proportional control
+        # slows down as it converges: at the 0.03 m tolerance the gain alone
+        # commands 1.8*0.03 = 0.054 rad/s (3 deg/s), so the last few degrees
+        # crawl and often time out. Floor it so the robot turns decisively and
+        # then stops dead once centred.
+        MIN_ROT  = 0.25
         MIN_FWD, MAX_FWD = 0.06, 0.16
 
         def clamp(v, lo, hi):
@@ -1063,7 +1086,10 @@ class NavPickOrchestrator(Node):
                     self.get_logger().info('aligned — box centred ahead'); break
             else:
                 ok = 0
-            t = Twist(); t.angular.z = clamp(K_ROT * y, -MAX_ROT, MAX_ROT)
+            w = clamp(K_ROT * y, -MAX_ROT, MAX_ROT)
+            if abs(w) < MIN_ROT:            # never crawl; see MIN_ROT
+                w = MIN_ROT if w >= 0 else -MIN_ROT
+            t = Twist(); t.angular.z = w
             self._cmd_vel_pub.publish(t); time.sleep(0.05)
         self._cmd_vel_pub.publish(Twist()); time.sleep(0.3)
 
@@ -1945,7 +1971,10 @@ class NavPickOrchestrator(Node):
             else:
                 ok_count = 0
             cmd = Twist()
-            cmd.angular.z = clamp(PLACE_DOCK_K_ROT * err, -PLACE_DOCK_MAX_ROT, PLACE_DOCK_MAX_ROT)
+            w = clamp(PLACE_DOCK_K_ROT * err, -PLACE_DOCK_MAX_ROT, PLACE_DOCK_MAX_ROT)
+            if abs(w) < PLACE_DOCK_MIN_ROT:      # never crawl; see PLACE_DOCK_MIN_ROT
+                w = PLACE_DOCK_MIN_ROT if w >= 0 else -PLACE_DOCK_MIN_ROT
+            cmd.angular.z = w
             self._cmd_vel_pub.publish(cmd)
             time.sleep(0.05)
         self._cmd_vel_pub.publish(Twist())

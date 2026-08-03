@@ -256,10 +256,10 @@
       <link name='body'>
         <pose>0 0 0.05 0 0 0</pose>
         <collision name='col'>
-          <geometry><box><size>0.18 0.18 0.10</size></box></geometry>
+          <geometry><box><size>0.18 0.10 0.10</size></box></geometry>
         </collision>
         <visual name='vis'>
-          <geometry><box><size>0.18 0.18 0.10</size></box></geometry>
+          <geometry><box><size>0.18 0.10 0.10</size></box></geometry>
           <material>
             <ambient>0.55 0.55 0.55 1</ambient>
             <diffuse>0.55 0.55 0.55 1</diffuse>
@@ -273,7 +273,7 @@
            Face normal outward (+Y = north, -Y = south, +X = east, -X = west).
            Tag ID 0: North face (+Y, yaw=0) -->
       <link name='tag_north'>
-        <pose>0 0.091 0.075 0 0 0</pose>
+        <pose>0 0.051 0.075 0 0 0</pose>
         <visual name='vis'>
           <geometry><box><size>0.10 0.001 0.10</size></box></geometry>
           <material>
@@ -288,7 +288,7 @@
       </link>
       <!-- Tag ID 1: South face (-Y, yaw=π) -->
       <link name='tag_south'>
-        <pose>0 -0.091 0.075 0 0 3.14159</pose>
+        <pose>0 -0.051 0.075 0 0 3.14159</pose>
         <visual name='vis'>
           <geometry><box><size>0.10 0.001 0.10</size></box></geometry>
           <material>
