@@ -275,7 +275,7 @@
       <link name='tag_north'>
         <pose>0 0.041 0.075 0 0 0</pose>
         <visual name='vis'>
-          <geometry><box><size>0.10 0.001 0.10</size></box></geometry>
+          <geometry><box><size>0.08 0.001 0.08</size></box></geometry>
           <material>
             <script>
               <uri>model://limo_car/media/materials/scripts/apriltag.material</uri>
@@ -290,7 +290,7 @@
       <link name='tag_south'>
         <pose>0 -0.041 0.075 0 0 3.14159</pose>
         <visual name='vis'>
-          <geometry><box><size>0.10 0.001 0.10</size></box></geometry>
+          <geometry><box><size>0.08 0.001 0.08</size></box></geometry>
           <material>
             <script>
               <uri>model://limo_car/media/materials/scripts/apriltag.material</uri>
@@ -305,7 +305,7 @@
       <link name='tag_east'>
         <pose>0.041 0 0.075 0 0 -1.5708</pose>
         <visual name='vis'>
-          <geometry><box><size>0.10 0.001 0.10</size></box></geometry>
+          <geometry><box><size>0.08 0.001 0.08</size></box></geometry>
           <material>
             <script>
               <uri>model://limo_car/media/materials/scripts/apriltag.material</uri>
@@ -320,7 +320,7 @@
       <link name='tag_west'>
         <pose>-0.041 0 0.075 0 0 1.5708</pose>
         <visual name='vis'>
-          <geometry><box><size>0.10 0.001 0.10</size></box></geometry>
+          <geometry><box><size>0.08 0.001 0.08</size></box></geometry>
           <material>
             <script>
               <uri>model://limo_car/media/materials/scripts/apriltag.material</uri>

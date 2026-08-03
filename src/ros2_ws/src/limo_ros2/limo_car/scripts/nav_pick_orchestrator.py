@@ -132,15 +132,23 @@ USE_WELD = True   # legacy default; overridden per-instance by use_physics_grasp
 # WELD_FALLBACK_ANGLE (-0.10) was an uncalibrated proxy for this same constant.
 BOX_CONTACT_ANGLE = -0.11    # rad — placeholder; run calibrate_contact_angle.py
 APERTURE_TOL      = 0.025    # ±rad band: stall within this of contact → GRASPED
-# LAG_THRESH/STALL_STEPS were tuned to stop the instant EITHER finger touches — but
-# only one side (gripper_controller, the left reference joint) is actually monitored,
-# and the real gripper has a single motor driving both sides symmetrically anyway.
-# With a light, freely-sliding box, a finger touching first should be allowed to push
-# the box sideways rather than halting the whole close — only a real, sustained
-# both-sides-blocked stall should count. Loosened accordingly (2026-07-26): more lag
-# tolerated, and it must persist much longer before being accepted as a real stall.
-LAG_THRESH        = 0.08     # rad: actual lags commanded by this → stall onset (was 0.03)
-STALL_STEPS       = 10       # consecutive stall detections to confirm (was 3, ~0.24s → ~0.8s)
+# LAG_THRESH/STALL_STEPS were loosened to 0.08/10 on 2026-07-26 so that one finger
+# brushing the box would not halt the close. That was tuned against a BROKEN close
+# loop: spin_once() was being used as a sleep, so the whole 70-step close ran in
+# ~65 ms and the joint could never track the command at all (see _spin_for).
+#
+# With the loop actually running at 0.08 s/step, the joint DOES follow, and 0.08/10
+# is far too slack. Once a finger touches, the joint holds still while the command
+# keeps advancing 0.005 rad/step, so reaching a 0.08 lag takes 16 steps and 10 more
+# to confirm — the controller drives 0.13 rad PAST contact before stopping. Measured
+# box contact is at actual ≈ -0.010 rad, so that is a hard squeeze against a light
+# box, which then slides out from between the fingers.
+#
+# 0.03/4 stops ~0.05 rad past contact: firm enough to hold, gentle enough not to
+# extrude the box. Retuned 2026-08-03 together with the _spin_for fix — these two
+# changes belong together, do not revert one without the other.
+LAG_THRESH        = 0.03     # rad: actual lags commanded by this → stall onset
+STALL_STEPS       = 4        # consecutive stall detections to confirm (~0.32 s)
 CLOSE_STEP_RAD    = 0.005    # rad per step (same as legacy)
 CLOSE_STEP_SEC    = 0.08     # s per step (same as legacy)
 MAX_GRASP_RETRIES = 2        # retry descents before aborting the pick
@@ -1365,6 +1373,29 @@ class NavPickOrchestrator(Node):
 
         time.sleep(0.3)
 
+    def _spin_for(self, seconds: float):
+        """Spin callbacks for a REAL wall-clock duration.
+
+        rclpy.spin_once(timeout_sec=X) is NOT a sleep — it returns as soon as it
+        executes one callback, and only waits up to X when the queue is empty.
+        With /joint_states at 50 Hz there is always work pending, so it returns
+        essentially instantly.
+
+        Using it as a sleep made close_until_contact() dump the gripper's entire
+        closing trajectory in ~65 ms instead of the intended 5.6 s (70 steps ×
+        0.08 s). ODE never had time to develop finger contact, the joint could
+        not follow the command, and stall detection became a race: the same box
+        in the same place would grasp on one attempt and report AIR on the next.
+        Observed 2026-08-03 in /tmp/run_191027.log — attempt 1 swept to the close
+        limit in 65 ms and reported AIR, attempt 2 stalled correctly and grasped.
+
+        This spins for the full duration while still servicing callbacks, so
+        _gripper_actual stays fresh.
+        """
+        end = time.time() + seconds
+        while time.time() < end:
+            rclpy.spin_once(self, timeout_sec=max(0.001, end - time.time()))
+
     def close_until_contact(self):
         """Step-close the gripper and weld. Success is decided by VISION
         (_verify_grasp_vision, Phase 0) — no longer by an aperture threshold.
@@ -1390,7 +1421,13 @@ class NavPickOrchestrator(Node):
         """
         self._weld_active = False
         cmd     = self._last_gripper[0]
-        floor   = GRIPPER_GRASP[0]    # -0.20 rad hard limit
+        # Close floor: bound the worst-case squeeze, independent of detection.
+        # Box contact is at actual ≈ -0.01 rad (measured, run_191027.log). The old
+        # floor of GRIPPER_GRASP[0] = -0.20 allowed 0.19 rad of grind whenever the
+        # stall detector missed — the visible "pushing so hard on the box". -0.06
+        # still closes 0.05 rad past contact (a firm hold; the physics joint has
+        # long since fired), but caps the crush even if no stall is ever detected.
+        floor   = -0.06
         lag_run = 0
         stall_angle = None
 
@@ -1409,7 +1446,7 @@ class NavPickOrchestrator(Node):
             self._gripper.publish(msg)
             self._last_gripper = msg.data[:]
 
-            rclpy.spin_once(self, timeout_sec=CLOSE_STEP_SEC)
+            self._spin_for(CLOSE_STEP_SEC)
 
             # smart_grasp (bumper or joint-error) fired the weld
             if self._weld_active:
@@ -1420,7 +1457,12 @@ class NavPickOrchestrator(Node):
 
             actual = self._gripper_actual
 
-            if not gripper_tracking and abs(actual - start_actual) >= TRACKING_RAD:
+            # Motion must be in the CLOSING direction (decreasing angle). abs()
+            # also accepted the tail of the preceding OPEN move, so "tracking"
+            # could be confirmed by the gripper still finishing its opening
+            # sweep — after which the lag test compares against a joint moving
+            # the wrong way.
+            if not gripper_tracking and (start_actual - actual) >= TRACKING_RAD:
                 gripper_tracking = True
                 self.get_logger().info(
                     f'[close] joint tracking confirmed  actual={actual:.3f}')
@@ -1763,13 +1805,30 @@ class NavPickOrchestrator(Node):
 
             result = self.close_until_contact()
 
-            # Nothing was between the fingers — no point lifting or verifying.
+            # AIR means the APERTURE never stalled. Whether that means "nothing is
+            # between the fingers" depends on which grasp mechanism is running.
+            #
+            # LEGACY WELD: the weld is a teleport we command, so it will happily
+            # grab a box 8 cm away and vision then reports a perfect grasp. The
+            # aperture is the only guard against faking it, so AIR must abort.
+            #
+            # PHYSICS GRASP: the joint is created by gazebo_grasp_plugin from REAL
+            # finger contacts. It cannot fire on nothing, so a false GRASPED cannot
+            # fake anything — and the post-lift ground-truth check is a strictly
+            # better test than the aperture anyway. Short-circuiting here just
+            # throws away grasps the plugin already made: with a light box the
+            # fingers can close around it without ever producing a sustained
+            # aperture stall. Let the lift decide.
             if result == GraspResult.AIR:
+                if not self._physics_grasp:
+                    self.get_logger().warn(
+                        '[grasp] AIR — gripper closed on nothing, skipping lift/verify')
+                    verified = False
+                    self._log_grasp_attempt(attempt, result, verified)
+                    continue
                 self.get_logger().warn(
-                    '[grasp] AIR — gripper closed on nothing, skipping lift/verify')
-                verified = False
-                self._log_grasp_attempt(attempt, result, verified)
-                continue
+                    '[grasp] no aperture stall, but physics grasp is active — '
+                    'lifting anyway and letting ground truth decide')
 
             # Lift — retry 3× (OMPL can be flaky on the first attempt)
             lifted = False

@@ -65,7 +65,12 @@ place_table:
   side:        0.08            # square side length (m) -- see constraint above
   top_z:       0.10            # table top height above ground (m)
   tag_id:      0               # AprilTag on the north (+Y) face, which the robot approaches
-  tag_size:    0.08125         # printed marker: 416/512 px of a 0.10 m plate
+  tag_size:    0.065           # printed marker: 416/512 px of the 0.08 m plate.
+                               # Plates were shrunk 0.10 -> 0.08 on 2026-08-03 to fit
+                               # the 0.08 m table faces (they overhung). MUST scale
+                               # with the plate: pose distance is estimated from the
+                               # tag's apparent size, so a stale value shifts every
+                               # dock distance proportionally.
   nav_approach: [-4.0, -0.50, -1.5708]   # Nav2 goal (x, y, yaw); clear of the
                                          # table's costmap inflation. The dock
                                          # covers the remaining ~1.25 m.
