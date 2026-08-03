@@ -25,7 +25,10 @@ Tag layout (IDs assigned in gen_apriltag.py):
 
 Parameters (live — tune with ros2 param set, no relaunch):
     tag_size   (float, default 0.08) : physical tag side length in metres
-    table_side (float, default 0.18) : place table square side length in metres
+    table_side (float, default 0.10) : place table square side length in metres.
+                                      MUST match place_table in final_map.world — the
+                                      drop point is tag_pos - normal*(table_side/2),
+                                      so a stale value aims the arm past the table.
     table_top_z (float, default 0.10): table top height above ground (world z, m)
 
 Note on coordinate convention:
@@ -63,7 +66,7 @@ class TagDockEstimator(Node):
 
         # ── Live params (tune with ros2 param set) ────────────────────────────
         self.declare_parameter('tag_size',    0.08)
-        self.declare_parameter('table_side',  0.18)
+        self.declare_parameter('table_side',  0.10)   # MUST match place_table in final_map.world
         self.declare_parameter('table_top_z', 0.10)
 
         # ── State ─────────────────────────────────────────────────────────────

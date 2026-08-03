@@ -76,6 +76,9 @@ class GraspResult:
 # Robot stops so the arm base (~0.22 m ahead of body centre) is ~0.20 m from box.
 # Table at (−2, 4); approach from +Y → stop at y ≈ 4.22.
 # Fine-tune NAV_GOAL_Y if the arm can't reach on first run.
+# FALLBACK ONLY. The live values come from config/scene.yaml via nav_pick.launch.py
+# (self._nav_goal_x etc). These literals are used only if the node is run bare,
+# without the launch file. Do not tune them -- tune scene.yaml.
 NAV_GOAL_X   = -2.0
 NAV_GOAL_Y   =  4.75    # Nav2 stops here; visual_docking() handles the final 0.5 m.
                          # Must be > pickup_table inflated north edge (4.10+0.45=4.55) + margin.
@@ -182,6 +185,7 @@ STACK_X_DEFAULT  =  0.26               # base_link x of the stack foundation (�
 STACK_Y_DEFAULT  = -0.12               # base_link y — offset to the side of the pick spot
 STACK_SURFACE_Z  =  0.06               # base_link z of the foundation surface top (table top)
 STACK_HOVER      =  0.10               # TCP hover above the current stack top before placing
+# FALLBACK ONLY -- live value is self._stop_distance, from config/scene.yaml.
 STOP_DISTANCE    =  0.24               # box distance from base_link at the pickup dock (arm reach limit)
 # Where the FINAL camera reading is taken, before the last short blind hop to the dock.
 # Chosen from geometry + observation: with the 0.14 m pickup table the WHOLE box is inside
@@ -205,27 +209,22 @@ NAV_PLACE_YAW  = -1.5708    # -π/2: robot faces -Y (toward the table face)
 
 # Closed-loop dock parameters (dock_to_tag)
 #
-# HARD GEOMETRIC LIMIT: the robot's front bumper is 0.189 m ahead of base_link
-# (measured from meshes/limo_base_collision_meters.stl, which is mounted with a
-# +pi/2 yaw, so the mesh's Y extent is the robot's X). Any commanded stop that
-# puts the table's near face closer than that is physically unreachable — the
-# robot jams against the table and the approach loop spins the wheels until it
-# times out. This is exactly what the old 0.18 m-deep place table did.
+# ALL of these are FALLBACKS. The live values are derived in
+# nav_pick.launch.py:load_scene() from config/scene.yaml and delivered as ROS
+# parameters (self._dock_range, self._place_map_y_dock, self._table_map_x/y).
 #
-#   place table depth 0.10 m  → near face  0.05 m from its centre
-#   tag plate                 → 0.051 m from its centre
-#   table centre at           → 0.25 m from base_link (PLACE_MAP_Y_DOCK = -1.75)
-#   ⇒ near face at 0.200 m, bumper at 0.189 m  → 0.011 m clearance ✓
-#   ⇒ tag at 0.199 m  → PLACE_DOCK_RANGE below
+# They used to be hand-computed constants, and every table change meant editing
+# them by hand in step with the world file, the launch file and the estimator.
+# On 2026-08-03 a table resize updated three of the four and the run failed:
+# the estimator still used the old size, aimed the arm 4 cm past the table, IK
+# failed, and the box was released in mid-air. Deriving them from one file
+# removes that whole class of bug.
 #
-# Same 0.011 m clearance as the proven pickup table (0.08 m deep, box at 0.24 m).
-PLACE_DOCK_RANGE   = 0.20   # stop when tag is this far from base_link (m)
-# Map-pos approach: drive until map_y ≤ this value.
-# Table centre at map (-4,-2).  Want table at x≈0.25 in base_link.
-# Robot at map_y = -2.0 + 0.25 = -1.75  →  PLACE_MAP_Y_DOCK = -1.75
-PLACE_MAP_Y_DOCK   = -1.75   # map y target for the primary dock approach
-TABLE_MAP_X        = -4.0    # known table centre map X (used for lateral correction)
-TABLE_MAP_Y        = -2.0    # known table centre map Y
+# DO NOT TUNE THESE. Tune config/scene.yaml.
+PLACE_DOCK_RANGE   = 0.20   # fallback: stop when tag is this far from base_link (m)
+PLACE_MAP_Y_DOCK   = -1.76  # fallback: map y target for the map-position dock
+TABLE_MAP_X        = -4.0   # fallback: place table centre, map X
+TABLE_MAP_Y        = -2.0   # fallback: place table centre, map Y
 PLACE_DOCK_YAW_TOL = 0.04   # Phase A: heading tight enough to start Phase C (rad ≈ 2.3°)
 PLACE_DOCK_BEAR_TOL= 0.04   # Phase A: tag bearing tolerance (rad)
 PLACE_DOCK_K_ROT   = 2.0    # Phase A/C rotation gain (rad/s per rad error)
@@ -347,7 +346,38 @@ class NavPickOrchestrator(Node):
         self.declare_parameter('stack_surface_z', STACK_SURFACE_Z)  # base_link z of surface top
 
         # ── Tag-dock knobs (live, tune with `ros2 param set` — NO relaunch) ────
+        # ── Scene geometry, supplied by nav_pick.launch.py from config/scene.yaml.
+        # The module constants are fallbacks for running this node bare.
+        # Single source of truth: config/scene.yaml. Never tune these here.
         self.declare_parameter('dock_range',      PLACE_DOCK_RANGE)    # tag distance at stop
+        self.declare_parameter('table_map_x',        TABLE_MAP_X)
+        self.declare_parameter('table_map_y',        TABLE_MAP_Y)
+        self.declare_parameter('place_map_y_dock',   PLACE_MAP_Y_DOCK)
+        self.declare_parameter('nav_place_x',        NAV_PLACE_X)
+        self.declare_parameter('nav_place_y',        NAV_PLACE_Y)
+        self.declare_parameter('nav_place_yaw',      NAV_PLACE_YAW)
+        self.declare_parameter('nav_goal_x',         NAV_GOAL_X)
+        self.declare_parameter('nav_goal_y',         NAV_GOAL_Y)
+        self.declare_parameter('nav_goal_yaw',       NAV_GOAL_YAW)
+        self.declare_parameter('stop_distance',      STOP_DISTANCE)
+        self.declare_parameter('place_table_top_z',  0.10)
+        self.declare_parameter('pickup_table_top_z', 0.14)
+
+        g = lambda n: float(self.get_parameter(n).value)
+        self._table_map_x       = g('table_map_x')
+        self._table_map_y       = g('table_map_y')
+        self._place_map_y_dock  = g('place_map_y_dock')
+        self._nav_place_x       = g('nav_place_x')
+        self._nav_place_y       = g('nav_place_y')
+        self._nav_place_yaw     = g('nav_place_yaw')
+        self._nav_goal_x        = g('nav_goal_x')
+        self._nav_goal_y        = g('nav_goal_y')
+        self._nav_goal_yaw      = g('nav_goal_yaw')
+        self._stop_distance     = g('stop_distance')
+        self.get_logger().info(
+            f'[scene] place table centre map=({self._table_map_x:.2f},'
+            f'{self._table_map_y:.2f}) dock_range={g("dock_range"):.3f} '
+            f'stop_distance={self._stop_distance:.3f}')
         self.declare_parameter('place_stack_levels', 1)                 # boxes to stack at place table
         self.declare_parameter('place_yaw_offset', 0.0)                 # calibration offset for arm yaw
 
@@ -640,16 +670,16 @@ class NavPickOrchestrator(Node):
         goal = NavigateToPose.Goal()
         goal.pose.header.frame_id = 'map'
         goal.pose.header.stamp = self.get_clock().now().to_msg()
-        goal.pose.pose.position.x = float(NAV_GOAL_X)
-        goal.pose.pose.position.y = float(NAV_GOAL_Y)
+        goal.pose.pose.position.x = self._nav_goal_x
+        goal.pose.pose.position.y = self._nav_goal_y
         # Yaw NAV_GOAL_YAW → quaternion
-        half = NAV_GOAL_YAW / 2.0
+        half = self._nav_goal_yaw / 2.0
         goal.pose.pose.orientation.z = math.sin(half)
         goal.pose.pose.orientation.w = math.cos(half)
 
         self.get_logger().info(
-            f'sending Nav2 goal → ({NAV_GOAL_X:.2f}, {NAV_GOAL_Y:.2f}, '
-            f'yaw={NAV_GOAL_YAW:.3f})')
+            f'sending Nav2 goal → ({self._nav_goal_x:.2f}, {self._nav_goal_y:.2f}, '
+            f'yaw={self._nav_goal_yaw:.3f})')
 
         gh = None
         for attempt in range(15):
@@ -1109,7 +1139,7 @@ class NavPickOrchestrator(Node):
             d0 = box0[0]
             # After driving straight to STOP_DISTANCE, the box sits at base_link
             # x≈STOP_DISTANCE (TRUE), with the accurate far-range y/z unchanged.
-            self._dock_box = (STOP_DISTANCE, box0[1], box0[2])
+            self._dock_box = (self._stop_distance, box0[1], box0[2])
             # Derive pickup table top height from the box centre (box top − half-height).
             # This eliminates the need to hand-tune stack_surface_z.
             self._table_top_base_z = box0[2] - BOX_HALF_H
@@ -1141,7 +1171,7 @@ class NavPickOrchestrator(Node):
         # ── STAGE 2: the final, best reading ────────────────────────────────
         final = self.get_box_xyz(samples=6, timeout=6.0)
         if final is not None:
-            self._dock_box = (STOP_DISTANCE, final[1], final[2])
+            self._dock_box = (self._stop_distance, final[1], final[2])
             self._table_top_base_z = final[2] - BOX_HALF_H
             self.get_logger().info(
                 f'FINAL READING at {FINAL_READ_DIST:.2f} m: box at '
@@ -1153,10 +1183,10 @@ class NavPickOrchestrator(Node):
                 'The box may already be out of the camera frame; check the table height.')
 
         # ── STAGE 3: the last short blind hop ───────────────────────────────
-        stage2 = max(0.0, FINAL_READ_DIST - STOP_DISTANCE)
+        stage2 = max(0.0, FINAL_READ_DIST - self._stop_distance)
         self.get_logger().info(
             f'Phase B stage 3: driving the last {stage2:.3f} m blind to '
-            f'{STOP_DISTANCE:.2f} m (the arm reach limit)')
+            f'{self._stop_distance:.2f} m (the arm reach limit)')
         self._drive_forward(stage2, FINAL_READ_DIST)
 
         # ── Lateral re-fix AFTER the drive (added 2026-07-28) ─────────────────
@@ -1206,7 +1236,7 @@ class NavPickOrchestrator(Node):
             if fresh is not None:
                 y_old, z_keep = self._dock_box[1], self._dock_box[2]
                 y_new = fresh[1]
-                self._dock_box = (STOP_DISTANCE, y_new, z_keep)
+                self._dock_box = (self._stop_distance, y_new, z_keep)
                 self.get_logger().info(
                     f'[dock] lateral re-fix after drive: y {y_old:+.4f} → {y_new:+.4f} '
                     f'(Δ{y_new - y_old:+.4f} m)')
@@ -2064,7 +2094,7 @@ class NavPickOrchestrator(Node):
         offset between the robot centre-line and the table centre.
         """
         self.get_logger().info(
-            f'map-pos dock: driving south to map_y ≤ {PLACE_MAP_Y_DOCK}')
+            f'map-pos dock: driving south to map_y ≤ {self._place_map_y_dock}')
 
         deadline = time.time() + 25.0
         while time.time() < deadline:
@@ -2081,7 +2111,7 @@ class NavPickOrchestrator(Node):
                 continue
 
             robot_y   = tf.transform.translation.y
-            remaining = robot_y - PLACE_MAP_Y_DOCK   # positive → still heading south
+            remaining = robot_y - self._place_map_y_dock   # positive → still heading south
             self.get_logger().info(
                 f'map-dock: map_y={robot_y:.3f}  remaining={remaining:.3f}',
                 throttle_duration_sec=0.8)
@@ -2112,8 +2142,8 @@ class NavPickOrchestrator(Node):
             yaw = 2.0 * math.atan2(q.z, q.w)          # robot heading in map frame
 
             # Vector robot → table centre in map frame
-            dx = TABLE_MAP_X - rx
-            dy = TABLE_MAP_Y - ry
+            dx = self._table_map_x - rx
+            dy = self._table_map_y - ry
 
             # Rotate into base_link:  forward = (cos yaw, sin yaw), left = (-sin yaw, cos yaw)
             table_x =  dx * math.cos(yaw) + dy * math.sin(yaw)
@@ -2125,7 +2155,7 @@ class NavPickOrchestrator(Node):
 
         except Exception as e:
             # Pure-geometry fallback if TF fails
-            table_x = abs(TABLE_MAP_Y - PLACE_MAP_Y_DOCK)
+            table_x = abs(self._table_map_y - self._place_map_y_dock)
             table_y = 0.0
             self.get_logger().warn(
                 f'TF final lookup failed ({e}); geometric fallback: ({table_x:.3f},0.000)')
@@ -2148,9 +2178,9 @@ class NavPickOrchestrator(Node):
         goal = NavigateToPose.Goal()
         goal.pose.header.frame_id = 'map'
         goal.pose.header.stamp = self.get_clock().now().to_msg()
-        goal.pose.pose.position.x = float(NAV_PLACE_X)
-        goal.pose.pose.position.y = float(NAV_PLACE_Y)
-        half = NAV_PLACE_YAW / 2.0
+        goal.pose.pose.position.x = self._nav_place_x
+        goal.pose.pose.position.y = self._nav_place_y
+        half = self._nav_place_yaw / 2.0
         goal.pose.pose.orientation.z = math.sin(half)
         goal.pose.pose.orientation.w = math.cos(half)
 
@@ -2215,7 +2245,7 @@ class NavPickOrchestrator(Node):
             return False
 
         px, py = self._latched_drop if self._latched_drop is not None else (0.22, 0.0)
-        px = min(px, STOP_DISTANCE)   # tag centre is 0.28 m out; arm reaches reliably to 0.24
+        px = min(px, self._stop_distance)   # arm reach ceiling (config/scene.yaml: robot.arm_reach)
         q  = TOPDOWN_QUAT   # straight down, same as grasp
 
         # Prefer the perception-derived table top (captured at pickup dock).
@@ -2237,15 +2267,45 @@ class NavPickOrchestrator(Node):
             self.get_logger().warn('[place] ready failed — continuing anyway')
 
         # ── hover above the table surface ────────────────────────────────────────
-        if not self.go_pose(px, py, hover_z, q, f'place hover L{level}'):
-            self.get_logger().error('[place] hover IK failed — dropping in place')
-            self.attach(False)
-            self.set_gripper(GRIPPER_OPEN, 'release')
+        # Lateral fallbacks: the dominant cause of hover failure is a large |py|.
+        # Nav2's xy_goal_tolerance is 0.25 m and a differential base cannot strafe,
+        # so the robot routinely ends up several cm off the table centre line. At
+        # full forward reach that sideways component pushes the pose out of the
+        # workspace. Pulling py toward the centre line trades lateral placement
+        # accuracy for a pose that can actually be reached.
+        hovered = False
+        for py_try in (py, py * 0.6, py * 0.3):
+            if self.go_pose(px, py_try, hover_z, q, f'place hover L{level}'):
+                if abs(py_try - py) > 1e-6:
+                    self.get_logger().warn(
+                        f'[place] hover unreachable at y={py:+.3f}; '
+                        f'placing at y={py_try:+.3f} instead '
+                        f'({abs(py - py_try) * 100:.1f} cm lateral error)')
+                py = py_try
+                hovered = True
+                break
+        if not hovered:
+            # NEVER open the gripper here. The arm is at an unknown pose, not over
+            # the table — releasing throws the box wherever the hand happens to be.
+            # A run once dropped it from 0.504 m, 34 cm from target. A failed place
+            # must stay a failed place, not become a destroyed trial.
+            self.get_logger().error(
+                f'[place] hover unreachable at x={px:.3f} y={py:+.3f} even after '
+                f'lateral fallbacks — aborting the place WITHOUT releasing. '
+                f'The box stays in the gripper.')
+            self.go_named('ready')
             return False
 
         # ── descend to place height ───────────────────────────────────────────────
         if not self.go_pose(px, py, place_z, q, f'place set L{level}'):
-            self.get_logger().error('[place] descent IK failed — dropping from hover')
+            # Unlike the hover failure above, here the arm IS over the table --
+            # the hover pose succeeded. Releasing drops the box a few centimetres
+            # onto the target rather than throwing it across the room, so this is
+            # a degraded placement, not a lost one. Recorded as such.
+            self.get_logger().warn(
+                f'[place] descent IK failed at z={place_z:.3f} — releasing from '
+                f'hover z={hover_z:.3f} ({(hover_z - place_z) * 100:.1f} cm drop). '
+                f'Degraded placement: the box lands on target but from height.')
             self.attach(False)
             self.set_gripper(GRIPPER_OPEN, 'release')
             return False
@@ -2431,7 +2491,7 @@ class NavPickOrchestrator(Node):
 
             # Measure where the box actually landed (for the thesis metrics)
             stack_top_z = 0.10 + lvl * BOX_HEIGHT + BOX_HALF_H  # world z of box centre
-            self._cycle_measure_placement(TABLE_MAP_X, TABLE_MAP_Y, stack_top_z,
+            self._cycle_measure_placement(self._table_map_x, self._table_map_y, stack_top_z,
                                           box_name=self._current_cycle['box_name'])
             self._cycle_end()
 

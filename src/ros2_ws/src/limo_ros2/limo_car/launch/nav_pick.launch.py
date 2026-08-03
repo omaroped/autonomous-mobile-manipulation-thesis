@@ -17,6 +17,9 @@ Usage:
 """
 
 import os
+import re
+
+import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
@@ -29,9 +32,85 @@ from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
 
+class SceneGeometryError(RuntimeError):
+    """The scene is not physically achievable, or the world file disagrees."""
+
+
+def load_scene(pkg):
+    """Read config/scene.yaml, derive the docking geometry, and validate it.
+
+    This is the ONLY place docking distances are computed. Everything the
+    orchestrator and the estimator need is derived here and passed down as ROS
+    parameters, so the geometry cannot drift out of sync between them again.
+
+    Raises SceneGeometryError if the scene cannot physically work, rather than
+    letting the robot discover it by pushing a table for 30 s or throwing the
+    box across the room.
+    """
+    with open(os.path.join(pkg, 'config', 'scene.yaml')) as f:
+        s = yaml.safe_load(f)
+
+    rb, pt, kt = s['robot'], s['place_table'], s['pickup_table']
+    bumper, reach, clear = rb['bumper_x'], rb['arm_reach'], rb['bumper_clearance']
+    side = pt['side']
+
+    # ── Derive ───────────────────────────────────────────────────────────────
+    # Stop with base_link one arm-reach from the table centre, so the arm can
+    # place AT the centre rather than being silently clamped short of it.
+    dock_range   = reach - side / 2.0        # base_link -> tag (tag is on the face)
+    place_y_dock = pt['centre_map'][1] + reach   # map y where the robot stops
+    stop_dist    = reach                     # pickup dock: base_link -> box
+
+    # ── Validate ─────────────────────────────────────────────────────────────
+    if dock_range < bumper + clear:
+        raise SceneGeometryError(
+            f"place_table.side = {side:.3f} m is too large.\n"
+            f"  dock_range = arm_reach - side/2 = {dock_range:.3f} m\n"
+            f"  but the bumper needs at least {bumper:+.3f} + {clear:.3f} = "
+            f"{bumper + clear:.3f} m.\n"
+            f"  The robot would be commanded INSIDE the table.\n"
+            f"  Max feasible side = {2 * (reach - bumper - clear):.3f} m.")
+
+    kt_face = kt['depth'] / 2.0
+    if stop_dist - kt_face < bumper + clear:
+        raise SceneGeometryError(
+            f"pickup_table.depth = {kt['depth']:.3f} m is too large: the bumper "
+            f"would sit {bumper + clear - (stop_dist - kt_face):.3f} m inside it.")
+
+    # ── Cross-check against the world file, which Gazebo actually loads ──────
+    # scene.yaml cannot drive Gazebo, so the two must be kept in step by hand.
+    # Catch the mismatch here instead of three phases into a run.
+    world = open(os.path.join(pkg, 'worlds', 'final_map.world')).read()
+    m = re.search(r"<model name='place_table'>.*?<box><size>([\d.]+) ([\d.]+) ([\d.]+)</size>",
+                  world, re.S)
+    if m:
+        wx, wy, wz = (float(v) for v in m.groups())
+        if abs(wx - side) > 1e-6 or abs(wy - side) > 1e-6 or abs(wz - pt['top_z']) > 1e-6:
+            raise SceneGeometryError(
+                f"scene.yaml and final_map.world disagree about place_table:\n"
+                f"  scene.yaml : {side} x {side} x {pt['top_z']}\n"
+                f"  world file : {wx} x {wy} x {wz}\n"
+                f"  Change BOTH together.")
+
+    s['derived'] = {
+        'dock_range':    dock_range,
+        'place_y_dock':  place_y_dock,
+        'stop_distance': stop_dist,
+        'bumper_gap':    dock_range - bumper,
+    }
+    print(f"[scene] place table {side*100:.0f} cm square, top {pt['top_z']*100:.0f} cm | "
+          f"dock_range {dock_range:.3f} m | bumper gap {dock_range - bumper:.3f} m | "
+          f"arm reaches table centre ✓")
+    return s
+
+
 def generate_launch_description():
     pkg      = get_package_share_directory('limo_car')
     moveit   = get_package_share_directory('limo_cobot_moveit_config')
+    scene    = load_scene(pkg)
+    place    = scene['place_table']
+    pickup   = scene['pickup_table']
+    derived  = scene['derived']
 
     spawn_y = LaunchConfiguration('spawn_y', default='7.0')
     use_rviz = LaunchConfiguration('use_rviz', default='true')
@@ -39,7 +118,10 @@ def generate_launch_description():
     drive_mode = LaunchConfiguration('drive_mode', default='diff')
     calib_loops = LaunchConfiguration('calib_loops', default='0')
     place_stack_levels = LaunchConfiguration('place_stack_levels', default='1')
-    dock_range = LaunchConfiguration('dock_range', default='0.20')
+    # Derived in load_scene() from arm_reach and place_table.side. Overridable
+    # on the command line for experiments, but the default is always consistent
+    # with the scene -- it can no longer be a stale literal.
+    dock_range = LaunchConfiguration('dock_range', default=str(derived['dock_range']))
     metrics_csv = LaunchConfiguration('metrics_csv', default='')
     use_physics_grasp = LaunchConfiguration('use_physics_grasp', default='true')
 
@@ -72,12 +154,13 @@ def generate_launch_description():
                     '(the world has 3 distinct stack_box_N boxes on the pickup table).')
 
     dock_range_arg = DeclareLaunchArgument(
-        'dock_range', default_value='0.20',
-        description='AprilTag dock stop distance (m). HARD FLOOR ~0.197: the front '
-                    'bumper is 0.189 m ahead of base_link, so with the tag on the '
-                    'table face the robot physically cannot get closer. The old '
-                    '0.15 was unreachable — Phase C ground the wheels against the '
-                    'table for the full 30 s timeout every run.')
+        'dock_range', default_value=str(derived['dock_range']),
+        description=f"AprilTag dock stop distance (m). DERIVED from config/scene.yaml "
+                    f"as arm_reach - place_table.side/2 = {derived['dock_range']:.3f}, "
+                    f"leaving a {derived['bumper_gap']*1000:.0f} mm bumper gap. "
+                    f"Do not hardcode: a value below "
+                    f"{scene['robot']['bumper_x']:.3f} m is physically unreachable and "
+                    f"the robot will grind its wheels against the table.")
 
     metrics_csv_arg = DeclareLaunchArgument(
         'metrics_csv', default_value='',
@@ -161,9 +244,12 @@ def generate_launch_description():
             output='screen',
             parameters=[{
                 'use_sim_time': True,
-                'tag_size': 0.08125,    # printed marker size: 416/512 px of a 0.10 m plate
-                'table_side': 0.18,     # square table side length in metres
-                'table_top_z': 0.10,    # table top height above ground in metres
+                # ALL from config/scene.yaml -- never write literals here. The
+                # drop point is tag_position - normal * (table_side/2), so a
+                # stale table_side aims the arm past the table entirely.
+                'tag_size':    place['tag_size'],
+                'table_side':  place['side'],
+                'table_top_z': place['top_z'],
             }])])
 
     # ── 5. grasp_attacher — LEGACY, only when use_physics_grasp:=false ───────
@@ -214,6 +300,22 @@ def generate_launch_description():
                           'place_stack_levels': ParameterValue(place_stack_levels, value_type=int),
                           'dock_range': ParameterValue(dock_range, value_type=float),
                           'metrics_csv': metrics_csv,
+                          # ── scene geometry, all from config/scene.yaml ──────
+                          # These replace TABLE_MAP_X/Y, PLACE_MAP_Y_DOCK,
+                          # NAV_PLACE_X/Y/YAW and STOP_DISTANCE, which used to be
+                          # module constants duplicating the world file.
+                          'table_map_x':      float(place['centre_map'][0]),
+                          'table_map_y':      float(place['centre_map'][1]),
+                          'place_map_y_dock': float(derived['place_y_dock']),
+                          'nav_place_x':      float(place['nav_approach'][0]),
+                          'nav_place_y':      float(place['nav_approach'][1]),
+                          'nav_place_yaw':    float(place['nav_approach'][2]),
+                          'nav_goal_x':       float(pickup['nav_approach'][0]),
+                          'nav_goal_y':       float(pickup['nav_approach'][1]),
+                          'nav_goal_yaw':     float(pickup['nav_approach'][2]),
+                          'stop_distance':    float(derived['stop_distance']),
+                          'place_table_top_z': float(place['top_z']),
+                          'pickup_table_top_z': float(pickup['top_z']),
                           # Same flag that gates the two legacy nodes above, so the
                           # orchestrator's release logic can never disagree with which
                           # grasp mechanism is actually running.

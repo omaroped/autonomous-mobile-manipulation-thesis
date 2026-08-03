@@ -1,0 +1,87 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# SCENE GEOMETRY — SINGLE SOURCE OF TRUTH
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Every number describing where things are and how big they are lives HERE.
+# nav_pick.launch.py reads this file, derives the docking distances from it,
+# validates that the geometry is physically achievable, and passes the results
+# to nav_pick_orchestrator and tag_dock_estimator as ROS parameters.
+#
+# WHY THIS FILE EXISTS
+# --------------------
+# The place table's geometry used to be duplicated across four files and about
+# ten constants: worlds/final_map.world, TABLE_MAP_X/Y + PLACE_MAP_Y_DOCK +
+# PLACE_DOCK_RANGE + NAV_PLACE_* in the orchestrator, table_side + table_top_z +
+# dock_range in the launch file, and table_side + table_top_z defaults in the
+# estimator. Changing the table meant remembering all ten.
+#
+# On 2026-08-03 the table was shrunk 0.18 -> 0.10 m and only three were updated.
+# The estimator kept computing the drop point as tag_pos - normal * (0.18/2),
+# aiming 4 cm past the table centre. The resulting pose was unreachable, the arm
+# failed IK, and the code released the box in mid-air 34 cm off target.
+# One stale constant destroyed the run.
+#
+# RULE: if a geometric number appears in Python, it is a bug. Put it here.
+#
+# NOT AUTOMATIC: worlds/final_map.world is read by Gazebo, which cannot parse
+# this file. The launch file therefore cross-checks the two at startup and
+# refuses to run if they disagree. Change both together.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── Robot ────────────────────────────────────────────────────────────────────
+# Both values are MEASURED, not assumed. See docs/HARDWARE_TO_MEASURE.md.
+robot:
+  # Front of the chassis ahead of base_link. Measured from
+  # meshes/limo_base_collision_meters.stl, which is mounted with a +pi/2 yaw,
+  # so the mesh's Y extent is the robot's X. This is a HARD floor: no dock
+  # distance below this is physically reachable, the robot just pushes.
+  bumper_x: 0.189
+
+  # Max forward reach of the arm to a top-down grasp pose, in base_link.
+  # Measured two ways: reach_sweep.py over 2295 IK queries, and a docking
+  # distance sweep on the bench. Both give 0.24-0.25 m; 0.24 is the safe value.
+  arm_reach: 0.24
+
+  # Gap left between bumper and table at the dock. Small on purpose -- only
+  # (arm_reach - bumper_x) = 51 mm of reach extends past the robot's own body,
+  # so every mm of clearance is a mm the arm cannot place with.
+  bumper_clearance: 0.010
+
+# ── Place table ──────────────────────────────────────────────────────────────
+# Square, with an AprilTag on each vertical face.
+#
+# THE SIDE LENGTH IS CONSTRAINED, NOT CHOSEN. For the arm to reach the table
+# CENTRE while the bumper still clears the near face:
+#
+#     bumper_x + bumper_clearance  <=  dock_range  <=  arm_reach - side/2
+#     0.189 + 0.010                <=  dock_range  <=  0.240 - side/2
+#     =>  side <= 2 * (0.240 - 0.199) = 0.082
+#
+# 0.08 satisfies it with 1 mm to spare. A 0.10 m table does NOT: it forces the
+# arm to place off-centre, which is what px = min(px, arm_reach) was silently
+# doing. The box is 0.04 m, so 0.08 still leaves 20 mm of margin per side.
+place_table:
+  centre_map: [-4.0, -2.0]     # table centre in the map frame (x, y)
+  side:        0.08            # square side length (m) -- see constraint above
+  top_z:       0.10            # table top height above ground (m)
+  tag_id:      0               # AprilTag on the north (+Y) face, which the robot approaches
+  tag_size:    0.08125         # printed marker: 416/512 px of a 0.10 m plate
+  nav_approach: [-4.0, -0.50, -1.5708]   # Nav2 goal (x, y, yaw); clear of the
+                                         # table's costmap inflation. The dock
+                                         # covers the remaining ~1.25 m.
+
+# ── Pickup table ─────────────────────────────────────────────────────────────
+# Deliberately NOT square: narrow along the approach axis so the bumper clears,
+# wide across it so the box has lateral margin. Raised to 0.14 m so the box
+# enters the camera's 45.6 deg vertical FOV at dock range -- with a 0.10 m table
+# the box sat below the bottom edge of the image and could not be seen at all.
+pickup_table:
+  centre_map: [-2.0, 4.0]
+  depth:       0.08            # along the approach axis (y) -- keeps the bumper clear
+  width:       0.30            # across it (x)
+  top_z:       0.14
+  nav_approach: [-2.0, 4.75, -1.5708]
+
+# ── Box ──────────────────────────────────────────────────────────────────────
+box:
+  size: 0.04                   # cube edge length (m)
