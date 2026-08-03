@@ -58,12 +58,20 @@ class ArmBridge(Node):
         port = self.get_parameter('port').value
         baud = int(self.get_parameter('baud').value)
         self.mc = MyCobot(port, baud)
-        time.sleep(0.5)
-        angles = self.mc.get_angles()
+        # The ATOM needs ~2 s after the serial port opens before it answers.
+        # 0.5 s falsely reported a dead arm on 2026-08-03; a 2 s wait then
+        # returned angles on the first try. Retry a few times to be safe.
+        angles = None
+        for i in range(4):
+            time.sleep(2.0)
+            angles = self.mc.get_angles()
+            if angles and angles != -1:
+                break
+            self.get_logger().warn(f'no answer yet (try {i + 1}/4)…')
         if not angles or angles == -1:
             raise RuntimeError(
-                f'no response from arm on {port} — is it powered, and is this '
-                f'really the arm port? (lidar is the CP2102 on ttyUSB0)')
+                f'no response from arm on {port} after 4 tries — is it powered, '
+                f'and is this really the arm port? (lidar is the CP2102 on ttyUSB0)')
         self.get_logger().info(f'arm on {port}: current angles {angles}')
 
         self._speed        = int(self.get_parameter('speed').value)
