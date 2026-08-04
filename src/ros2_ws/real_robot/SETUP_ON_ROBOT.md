@@ -103,14 +103,23 @@ Storage is a **128 GB NVMe SSD** (`nvme0n1`), not eMMC and not SD. The rootfs is
 sudo shutdown -h now      # then WAIT for it to power off
 ```
 
-**Never cut power to a running Jetson.** On 2026-08-04 the root filesystem was corrupted
-beyond boot -- UEFI completed and listed the 128 GB SSD, but selecting it gave a blinking
-cursor, no console, no network. The cause was almost certainly repeated hard power-offs
-during a long debugging session. A full reflash was required.
+**Never cut power to a running Jetson.** Still good practice -- but note the 2026-08-04
+boot failure was NOT caused by this, despite an earlier version of this file saying so.
 
-That reflash cost ~3 hours and no data, only because everything in this directory had been
-committed to git minutes earlier. Do not rely on that luck twice: `scp` anything created
-on the robot back to the repo the same day.
+**CORRECTED root cause:** the rootfs was never corrupted. It mounts clean and every file is
+intact; the PARTUUID the initrd looks for matches `nvme0n1p1` exactly. UEFI and a generic
+Ubuntu kernel both enumerate the SSD, but the L4T kernel intermittently does not -- a
+**physical PCIe/M.2 connection fault**. A driven robot vibrates and the M.2 card backs out
+of its slot slightly. Swapping the initrd in `extlinux.conf` did not help, which is
+consistent: no software fix reaches a link that is not there.
+
+**Fix: reseat the NVMe.** Remove the acrylic top plate (4 screws, the one carrying the
+lidar), unscrew the M.2 retaining screw, pull the card, inspect the contacts, push it back
+in firmly and re-tighten. See `docs/jetson_boot_failure_2026-08-04.md` for the full
+evidence trail and every route already ruled out.
+
+Backup discipline still applies regardless: `scp` anything created on the robot back to the
+repo the same day.
 
 ## Hardware facts worth not rediscovering
 
