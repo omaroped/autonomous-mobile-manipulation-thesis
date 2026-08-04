@@ -61,25 +61,32 @@ model for this robot. Override it with `limo_tminipro.yaml` for the ±100° prod
 
 ---
 
-## ⚠️ THE MODULE IS AN ORIN **NX**, NOT AN ORIN NANO
+## Module identity — Jetson Orin **Nano** 8 GB (P3767-0003)
 
-Read from the UEFI setup screen 2026-08-04:
+**Confirmed three ways (2026-08-04):**
+1. SDK Manager, talking to the chip over USB in recovery mode, offers ONLY Orin Nano
+   options — `P3767-0003` and `P3767-0005` — on a `P3768-0000` carrier.
+2. Supervisor's purchase record lists "Jetson Orin Nano" (not Super, not dev-kit).
+3. Firmware is 36.4.0 = JetPack 6.1, which predates the Super module's release.
 
-```
-NVIDIA Jetson Orin NX Engineering Reference Developer Kit
-Orin                     1.51 GHz
-36.4.0-gcid-37537400     8005 MB RAM
-```
+**In SDK Manager select `Jetson Orin Nano 8GB / P3767-0003`.** The other option,
+`P3767-0005`, is the December-2024 "Super" developer-kit module — same silicon, different
+clock and power profile. The two modules are **physically identical**; the only way to tell
+them apart by eye is the `699-13767-XXXX` part number on the module label.
 
-**Jetson Orin NX, 8 GB. Firmware 36.4.0 (L4T 36.4).** Every earlier document in this
-project — including docs/robot_setup/jetson_flash_guide.md — says "Orin Nano". That is
-WRONG and was never verified against the hardware.
+> **Correction.** An earlier version of this file claimed the module was an Orin **NX**,
+> based on the dtb filename `tegra234-p3768-0000+p3767-0001-nv-super.dtb` seen in `/boot`.
+> That was a misreading: L4T ships dtb files for *every* module variant, so a filename in an
+> `ls` listing says nothing about which one is loaded. The UEFI banner also reads "Orin NX
+> Engineering Reference Developer Kit", which is NVIDIA's generic reference string, not a
+> statement about the fitted module. Trust SDK Manager's detection over both.
 
-**In SDK Manager select Jetson Orin NX.** Choosing Orin Nano flashes the wrong device tree
-and board config; at best it fails, at worst it leaves the module unbootable.
+Storage is a **128 GB NVMe SSD** (`nvme0n1`). The rootfs is `/dev/nvme0n1p1`,
+PARTLABEL `APP`, ext4.
 
-Storage is a **128 GB NVMe SSD** (`nvme0n1`), not eMMC and not SD. The rootfs is
-`/dev/nvme0n1p1`, PARTLABEL `APP`, ext4.
+Entering **Force Recovery**: power off, jumper `FC REC` to an adjacent `GND` on the 12-pin
+button header (silkscreened on the carrier), power on, remove after ~5 s. Verify on the host
+with `lsusb | grep -i nvidia` — an `NVIDIA Corp. APX` device means recovery mode is active.
 
 ## Full rebuild order after a reflash
 
