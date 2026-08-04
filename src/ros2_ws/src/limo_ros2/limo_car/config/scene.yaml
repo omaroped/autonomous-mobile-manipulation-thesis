@@ -47,6 +47,14 @@ robot:
   # so every mm of clearance is a mm the arm cannot place with.
   bumper_clearance: 0.010
 
+  # base_link height above ground (world frame), MEASURED in Gazebo
+  # (gz model -m mbot -p; = 0.15 URDF - 5mm wheel settle). Confirmed in
+  # docs/HARDWARE_TO_MEASURE.md, docs/experiment_log.md, docs/VERIFICATION_REGISTER.md.
+  # Used to convert a table's WORLD top_z into the base_link-frame height the
+  # arm targets -- the two tables differ (0.14 pickup vs 0.10 place) and the
+  # conversion must be done per table, not assumed constant across them.
+  base_link_ground_z: 0.145
+
 # ── Place table ──────────────────────────────────────────────────────────────
 # Square, with an AprilTag on each vertical face.
 #

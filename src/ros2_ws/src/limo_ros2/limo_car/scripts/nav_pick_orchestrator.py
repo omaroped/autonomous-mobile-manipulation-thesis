@@ -368,8 +368,25 @@ class NavPickOrchestrator(Node):
         self.declare_parameter('nav_goal_y',         NAV_GOAL_Y)
         self.declare_parameter('nav_goal_yaw',       NAV_GOAL_YAW)
         self.declare_parameter('stop_distance',      STOP_DISTANCE)
-        self.declare_parameter('place_table_top_z',  0.10)
-        self.declare_parameter('pickup_table_top_z', 0.14)
+        # base_link-frame table surface heights, derived in nav_pick.launch.py
+        # from config/scene.yaml (world top_z - robot.base_link_ground_z).
+        # place_surface_base_z is the SOURCE OF TRUTH for place_box(): there is
+        # no perception of the place table at place time (unlike pickup, which
+        # sees the box and derives its own surface height live), so this
+        # scene-derived constant is what release height is computed from.
+        #
+        # Bug fixed 2026-08-04: place_box() used to fall back to
+        # self._table_top_base_z, a value set ONLY during pickup docking from
+        # the PICKUP table's perceived height. Reused unchanged for the place
+        # table (4 cm shorter in world), it released the box ~6 cm above an
+        # 8x8 cm table -- enough to bounce/roll it onto the floor. place_success
+        # still read True because it was never checked against ground truth.
+        # See metrics_20260803_195910.csv (err_xy 10 cm) and
+        # metrics_20260803_195111.csv (err_xy 89 cm) -- both landed on the
+        # floor (box world z=0.020), not the table.
+        self.declare_parameter('place_surface_base_z',  -0.045)   # fallback: 0.10-0.145
+        self.declare_parameter('pickup_surface_base_z', -0.005)   # fallback: 0.14-0.145
+        self.declare_parameter('place_table_top_z_world', 0.10)   # world frame, for metrics ground truth
 
         g = lambda n: float(self.get_parameter(n).value)
         self._table_map_x       = g('table_map_x')
@@ -382,10 +399,13 @@ class NavPickOrchestrator(Node):
         self._nav_goal_y        = g('nav_goal_y')
         self._nav_goal_yaw      = g('nav_goal_yaw')
         self._stop_distance     = g('stop_distance')
+        self._place_surface_base_z = g('place_surface_base_z')
+        self._place_table_top_z_world = g('place_table_top_z_world')
         self.get_logger().info(
             f'[scene] place table centre map=({self._table_map_x:.2f},'
             f'{self._table_map_y:.2f}) dock_range={g("dock_range"):.3f} '
-            f'stop_distance={self._stop_distance:.3f}')
+            f'stop_distance={self._stop_distance:.3f} '
+            f'place_surface_base_z={self._place_surface_base_z:+.4f}')
         self.declare_parameter('place_stack_levels', 1)                 # boxes to stack at place table
         self.declare_parameter('place_yaw_offset', 0.0)                 # calibration offset for arm yaw
 
@@ -2307,13 +2327,14 @@ class NavPickOrchestrator(Node):
         px = min(px, self._stop_distance)   # arm reach ceiling (config/scene.yaml: robot.arm_reach)
         q  = TOPDOWN_QUAT   # straight down, same as grasp
 
-        # Prefer the perception-derived table top (captured at pickup dock).
-        # Falls back to the live param if perception never ran (e.g. calib mode).
-        param_z = float(self.get_parameter('stack_surface_z').value)
-        surface_z = self._table_top_base_z if self._table_top_base_z is not None else param_z
-        self.get_logger().info(
-            f'[place] surface_z={surface_z:.4f} '
-            f'({"perceived" if self._table_top_base_z is not None else "param fallback"})')
+        # The PLACE table's surface height, scene-derived (config/scene.yaml via
+        # nav_pick.launch.py). NOT self._table_top_base_z -- that is set only
+        # during PICKUP docking from the pickup table's perceived height, and
+        # the two tables differ by 4 cm in world height. Reusing it here was
+        # the bug that released the box ~6 cm above an 8x8 cm table. See the
+        # declare_parameter comment above for the incident.
+        surface_z = self._place_surface_base_z
+        self.get_logger().info(f'[place] surface_z={surface_z:.4f} (scene-derived)')
         rest_surface = surface_z + level * BOX_HEIGHT
         hover_z      = rest_surface + BOX_HALF_H + STACK_HOVER
         place_z      = rest_surface + BOX_HALF_H + GRASP_ABOVE
@@ -2546,12 +2567,39 @@ class NavPickOrchestrator(Node):
         for lvl in range(place_levels):
             self.get_logger().info(f'Placing level {lvl}…')
             place_ok = self.place_box(level=lvl)
-            self._current_cycle['place_success'] = place_ok
 
-            # Measure where the box actually landed (for the thesis metrics)
-            stack_top_z = 0.10 + lvl * BOX_HEIGHT + BOX_HALF_H  # world z of box centre
+            # Measure where the box actually landed (Gazebo ground truth, sim only)
+            # BEFORE deciding success — place_box() returning True only means the
+            # arm's motion plan executed; it says nothing about where the box ended
+            # up. Bug fixed 2026-08-04: place_success read True on runs where the
+            # box bounced off the table and landed on the floor (see the
+            # place_surface_base_z fix above for the release-height root cause).
+            stack_top_z = self._place_table_top_z_world + lvl * BOX_HEIGHT + BOX_HALF_H
             self._cycle_measure_placement(self._table_map_x, self._table_map_y, stack_top_z,
                                           box_name=self._current_cycle['box_name'])
+
+            if place_ok:
+                ex = self._current_cycle.get('placement_err_x')
+                ey = self._current_cycle.get('placement_err_y')
+                ez = self._current_cycle.get('placement_err_z')
+                if ex is not None and ey is not None:
+                    err_xy = math.hypot(ex, ey)
+                    # Table half-side is 0.04 m (scene.yaml place_table.side/2);
+                    # 0.03 m leaves a small margin for a box still counted "placed"
+                    # near the edge, while catching anything that actually missed.
+                    PLACE_XY_TOL, PLACE_Z_TOL = 0.03, 0.03
+                    if err_xy > PLACE_XY_TOL or (ez is not None and abs(ez) > PLACE_Z_TOL):
+                        self.get_logger().error(
+                            f'[place] arm motion completed but the box MISSED the '
+                            f'table: err_xy={err_xy:.3f} m (tol {PLACE_XY_TOL}), '
+                            f'err_z={ez} — marking place_success=False')
+                        place_ok = False
+                else:
+                    self.get_logger().warn(
+                        '[place] no ground truth available — cannot verify placement; '
+                        'trusting the mechanical result (real-hardware behaviour)')
+
+            self._current_cycle['place_success'] = place_ok
             self._cycle_end()
 
             if not place_ok:

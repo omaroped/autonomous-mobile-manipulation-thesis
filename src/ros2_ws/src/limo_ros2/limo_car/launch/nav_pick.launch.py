@@ -52,6 +52,7 @@ def load_scene(pkg):
 
     rb, pt, kt = s['robot'], s['place_table'], s['pickup_table']
     bumper, reach, clear = rb['bumper_x'], rb['arm_reach'], rb['bumper_clearance']
+    ground_z = rb['base_link_ground_z']
     side = pt['side']
 
     # ── Derive ───────────────────────────────────────────────────────────────
@@ -60,6 +61,19 @@ def load_scene(pkg):
     dock_range   = reach - side / 2.0        # base_link -> tag (tag is on the face)
     place_y_dock = pt['centre_map'][1] + reach   # map y where the robot stops
     stop_dist    = reach                     # pickup dock: base_link -> box
+
+    # Table top height, in base_link frame, for the arm's z target.
+    # WORLD top_z - base_link_ground_z. The two tables have different world
+    # heights (0.14 pickup, 0.10 place), so this MUST be computed per table.
+    # Bug found 2026-08-04: place_box() was reusing the PICKUP table's
+    # perceived surface height for the PLACE table (no perception happens at
+    # place time) -- releasing the box ~6 cm above a table only 8x8 cm across,
+    # which bounced/rolled it off onto the floor. Both affected runs still
+    # reported place_success=True: metrics_20260803_195910.csv (err_xy 10 cm)
+    # and metrics_20260803_195111.csv (err_xy 89 cm), both with box world
+    # z=0.020 -- resting on the floor, not the table.
+    place_surface_base_z  = pt['top_z'] - ground_z
+    pickup_surface_base_z = kt['top_z'] - ground_z
 
     # ── Validate ─────────────────────────────────────────────────────────────
     if dock_range < bumper + clear:
@@ -93,14 +107,19 @@ def load_scene(pkg):
                 f"  Change BOTH together.")
 
     s['derived'] = {
-        'dock_range':    dock_range,
-        'place_y_dock':  place_y_dock,
-        'stop_distance': stop_dist,
-        'bumper_gap':    dock_range - bumper,
+        'dock_range':             dock_range,
+        'place_y_dock':           place_y_dock,
+        'stop_distance':          stop_dist,
+        'bumper_gap':             dock_range - bumper,
+        'place_surface_base_z':   place_surface_base_z,
+        'pickup_surface_base_z':  pickup_surface_base_z,
     }
     print(f"[scene] place table {side*100:.0f} cm square, top {pt['top_z']*100:.0f} cm | "
           f"dock_range {dock_range:.3f} m | bumper gap {dock_range - bumper:.3f} m | "
           f"arm reaches table centre ✓")
+    print(f"[scene] place surface at {place_surface_base_z:+.4f} m in base_link "
+          f"(was silently reusing pickup's {pickup_surface_base_z:+.4f} m — "
+          f"a {abs(place_surface_base_z - pickup_surface_base_z)*100:.1f} cm error)")
     return s
 
 
@@ -314,8 +333,16 @@ def generate_launch_description():
                           'nav_goal_y':       float(pickup['nav_approach'][1]),
                           'nav_goal_yaw':     float(pickup['nav_approach'][2]),
                           'stop_distance':    float(derived['stop_distance']),
-                          'place_table_top_z': float(place['top_z']),
-                          'pickup_table_top_z': float(pickup['top_z']),
+                          # base_link-frame table surface heights (see load_scene).
+                          # place_box() has no live perception of the place table --
+                          # unlike pickup, nothing looks at it before release -- so
+                          # this scene-derived constant IS the source of truth, not
+                          # a fallback.
+                          'place_surface_base_z':  float(derived['place_surface_base_z']),
+                          'pickup_surface_base_z': float(derived['pickup_surface_base_z']),
+                          # World-frame top_z, for comparing against Gazebo ground
+                          # truth in the metrics harness (world frame, not base_link).
+                          'place_table_top_z_world': float(place['top_z']),
                           # Same flag that gates the two legacy nodes above, so the
                           # orchestrator's release logic can never disagree with which
                           # grasp mechanism is actually running.
