@@ -77,6 +77,21 @@ model for this robot. Override it with `limo_tminipro.yaml` for the ±100° prod
    `OrbbecSDK_ROS2/orbbec_camera/scripts/install_udev_rules.sh` for the camera.
 8. `cd ~/limo_ros2_ws && rosdep install --from-paths src --ignore-src -r -y && colcon build`
 
+## ⚠️ ALWAYS SHUT DOWN CLEANLY
+
+```bash
+sudo shutdown -h now      # then WAIT for it to power off
+```
+
+**Never cut power to a running Jetson.** On 2026-08-04 the root filesystem was corrupted
+beyond boot -- UEFI completed and listed the 128 GB SSD, but selecting it gave a blinking
+cursor, no console, no network. The cause was almost certainly repeated hard power-offs
+during a long debugging session. A full reflash was required.
+
+That reflash cost ~3 hours and no data, only because everything in this directory had been
+committed to git minutes earlier. Do not rely on that luck twice: `scp` anything created
+on the robot back to the repo the same day.
+
 ## Hardware facts worth not rediscovering
 
 | device | port / id | note |
