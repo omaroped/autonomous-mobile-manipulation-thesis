@@ -61,6 +61,26 @@ model for this robot. Override it with `limo_tminipro.yaml` for the ±100° prod
 
 ---
 
+## ⚠️ THE MODULE IS AN ORIN **NX**, NOT AN ORIN NANO
+
+Read from the UEFI setup screen 2026-08-04:
+
+```
+NVIDIA Jetson Orin NX Engineering Reference Developer Kit
+Orin                     1.51 GHz
+36.4.0-gcid-37537400     8005 MB RAM
+```
+
+**Jetson Orin NX, 8 GB. Firmware 36.4.0 (L4T 36.4).** Every earlier document in this
+project — including docs/robot_setup/jetson_flash_guide.md — says "Orin Nano". That is
+WRONG and was never verified against the hardware.
+
+**In SDK Manager select Jetson Orin NX.** Choosing Orin Nano flashes the wrong device tree
+and board config; at best it fails, at worst it leaves the module unbootable.
+
+Storage is a **128 GB NVMe SSD** (`nvme0n1`), not eMMC and not SD. The rootfs is
+`/dev/nvme0n1p1`, PARTLABEL `APP`, ext4.
+
 ## Full rebuild order after a reflash
 
 1. Flash JetPack 6.x, install ROS 2 Humble.
