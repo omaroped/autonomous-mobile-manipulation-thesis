@@ -34,6 +34,8 @@ import time
 
 import numpy as np
 
+import reach_lookup
+
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionClient
@@ -47,8 +49,8 @@ from nav_msgs.msg import Odometry
 
 from nav2_msgs.action import NavigateToPose
 
-from moveit_msgs.action import MoveGroup
-from moveit_msgs.srv import ApplyPlanningScene
+from moveit_msgs.action import MoveGroup, ExecuteTrajectory
+from moveit_msgs.srv import ApplyPlanningScene, GetCartesianPath
 from moveit_msgs.msg import (
     MotionPlanRequest, Constraints, JointConstraint,
     PositionConstraint, OrientationConstraint, BoundingVolume,
@@ -236,6 +238,27 @@ TABLE_MAP_Y        = -2.0   # fallback: place table centre, map Y
 PLACE_DOCK_YAW_TOL = 0.04   # Phase A: heading tight enough to start Phase C (rad ≈ 2.3°)
 PLACE_DOCK_BEAR_TOL= 0.04   # Phase A: tag bearing tolerance (rad)
 PLACE_DOCK_K_ROT   = 2.0    # Phase A/C rotation gain (rad/s per rad error)
+
+# ── Phase B: lateral centring on the tag's face-normal line ──────────────────
+# Squaring the heading (Phase A) makes the chassis PARALLEL to the face normal. It
+# does NOT put the chassis ON that normal line. Nav2's xy_goal_tolerance is 0.25 m,
+# so the robot routinely stops several cm to one side; Phase A squares it there, and
+# Phase C then drives straight forward and arrives just as far off to the side.
+#
+# The arm has been absorbing that error ever since: place_box() carries lateral
+# fallbacks (py -> py*0.6 -> py*0.3) that trade placement accuracy for a reachable
+# pose. That is compensating in the wrong subsystem — the base should arrive centred.
+#
+# Once squared, the tag's y in base_link IS the lateral offset, so the correction is
+# a pure sideways shift. A differential base cannot strafe, so it is done as a crab:
+# pivot 90 deg, drive the offset, pivot back. The drive leg runs PERPENDICULAR to the
+# approach axis and so never moves the robot toward the table — which is how this
+# differs from the 2026-07 "Phase B steering trim" that drove into it and was reverted.
+PLACE_DOCK_LAT_TOL  = 0.02   # m — offset from the normal line that counts as centred
+PLACE_DOCK_LAT_MAX  = 0.35   # m — refuse to crab further; a bigger reading is a bad tag
+PLACE_DOCK_CRAB_ROT = 0.8    # rad/s for the 90 deg pivots
+PLACE_DOCK_CRAB_FWD = 0.10   # m/s for the sideways leg — slow, it is open-loop on odom
+PLACE_DOCK_LAT_ITERS = 3     # re-measure and repeat; each pass removes odometry error
 PLACE_DOCK_K_FWD   = 0.8    # Phase C forward gain (m/s per m range error)
 PLACE_DOCK_MAX_ROT = 0.80   # max rotation speed (rad/s)
 # Minimum turn rate for Phase A (rotate in place). Proportional control alone
@@ -257,6 +280,26 @@ PLAN_ATTEMPTS = 10
 PLAN_TIME_SEC =  5.0
 VEL_SCALE     =  0.2
 ACC_SCALE     =  0.2
+# 30 s was too tight for some real executions (a straight-line retimed trajectory
+# legitimately took 62 s once) -- the client gave up and reported FAILED while the
+# goal kept running server-side, unmonitored, with the orchestrator already moving
+# on to the next command. Raised, and both wait sites now cancel on timeout instead
+# of abandoning the goal. Diagnosed 2026-08-12 after this exact bug (already fixed
+# in real_grasp_test.py the night before) recurred here.
+EXEC_TIMEOUT_SEC = 90.0
+
+# ── Cartesian (straight-line) motion ─────────────────────────────────────────
+# go_pose() plans in JOINT space via OMPL/RRTConnect, which optimises for path
+# VALIDITY, not for the shape the tool traces. A commanded vertical move therefore
+# arrives along an arc. MEASURED 2026-07-28: a commanded 0.060 m lift produced only
+# 0.031 m of actual rise — roughly half the motion went sideways (see
+# _verify_grasp_truth's docstring). On the way DOWN that same lateral component is
+# what clips the box before the fingers are around it.
+#
+# For the short approach/retreat segments either side of a grasp or a place, the
+# straight line is the whole point, so those use /compute_cartesian_path instead.
+CART_MAX_STEP     = 0.005   # interpolation step (m). 5 mm over a 60 mm move = 12 waypoints.
+CART_MIN_FRACTION = 0.90    # accept the path only if the interpolator covered >= 90%
 MOVEIT_SUCCESS = 1
 
 # ── Base pin ──────────────────────────────────────────────────────────────────
@@ -277,6 +320,11 @@ class NavPickOrchestrator(Node):
 
         # MoveIt
         self._move  = ActionClient(self, MoveGroup, '/move_action')
+        # Straight-line motion: plan with /compute_cartesian_path, then run the
+        # returned trajectory through /execute_trajectory. MoveGroup's own action
+        # cannot do this — it only takes goal CONSTRAINTS, never a precomputed path.
+        self._cart  = self.create_client(GetCartesianPath, '/compute_cartesian_path')
+        self._exec  = ActionClient(self, ExecuteTrajectory, '/execute_trajectory')
         self._scene = self.create_client(ApplyPlanningScene, '/apply_planning_scene')
 
         # Gripper
@@ -304,6 +352,7 @@ class NavPickOrchestrator(Node):
         # Odometry (for the blind final approach — drive a measured distance when the
         # real-spec camera can no longer see the box closer than 0.30 m)
         self._odom = None
+        self._odom_yaw = None
         self.create_subscription(Odometry, '/odom', self._odom_cb, 10)
         # Box (x,y,z) in base_link recorded at the dock: x from the odometry-measured
         # distance (TRUE), y/z from the accurate far perception. Used for the grasp so
@@ -327,6 +376,14 @@ class NavPickOrchestrator(Node):
             f'grasp mechanism = '
             f'{"PHYSICS (libgazebo_grasp_plugin real fixed joint)" if self._physics_grasp else "LEGACY kinematic weld (grasp_attacher)"}')
 
+        # base_pin_enabled:=false — experiment: does the base actually creep during
+        # the arm's motion without the 50 Hz teleport hold? pin_base() becomes a
+        # no-op; every existing pin_base()/unpin_base() call site is untouched.
+        self.declare_parameter('base_pin_enabled', True)
+        self._base_pin_enabled = bool(self.get_parameter('base_pin_enabled').value)
+        if not self._base_pin_enabled:
+            self.get_logger().warn('base_pin_enabled=false — base will NOT be held during arm motion')
+
         # ── Calibration knobs (live, tune with `ros2 param set` — NO relaunch) ──
         self.declare_parameter('grasp_off_x', GRASP_OFFSET[0])
         self.declare_parameter('grasp_off_y', GRASP_OFFSET[1])
@@ -348,6 +405,25 @@ class NavPickOrchestrator(Node):
         self.declare_parameter('box_reset_xyz', [-2.0, 4.0, 0.16])
 
         # ── Stacking knobs (live, tune with `ros2 param set` — NO relaunch) ──────
+        # Straight-line approach/retreat either side of a grasp or a place.
+        # Live param so the arcing joint-space behaviour can be A/B'd against the
+        # Cartesian one WITHOUT a rebuild:
+        #     ros2 param set /nav_pick_orchestrator use_cartesian_descent false
+        # Only the SHORT vertical segments use it; long transfers stay joint-space,
+        # where a straight tool path is neither wanted nor reliably solvable.
+        self.declare_parameter('use_cartesian_descent', True)
+
+        # How far the gripper is allowed to close (rad). 0 = just touching,
+        # negative = squeezing further; -0.20 is fully closed. Live param —
+        # tune without rebuilding:
+        #     ros2 param set /nav_pick_orchestrator grasp_close_floor -0.15
+        self.declare_parameter('grasp_close_floor', -0.13)
+
+        # Phase B — put the base ON the tag's face-normal line before driving in.
+        # Live param, same A/B reasoning as above:
+        #     ros2 param set /nav_pick_orchestrator dock_lateral_align false
+        self.declare_parameter('dock_lateral_align', True)
+
         self.declare_parameter('stack_count', STACK_COUNT_DEF)   # >0 → stack this many boxes
         self.declare_parameter('stack_x', STACK_X_DEFAULT)       # base_link x of foundation
         self.declare_parameter('stack_y', STACK_Y_DEFAULT)       # base_link y of foundation
@@ -452,6 +528,12 @@ class NavPickOrchestrator(Node):
     def _odom_cb(self, msg):
         p = msg.pose.pose.position
         self._odom = (p.x, p.y)
+        # Heading too — the lateral centring maneuver (Phase B) turns by a commanded
+        # angle, and closing that loop on odometry is what makes it a repeatable
+        # 90 degrees instead of "however far it got in N seconds".
+        q = msg.pose.pose.orientation
+        self._odom_yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                                    1.0 - 2.0 * (q.y * q.y + q.z * q.z))
 
     def _odom_dist_since(self, x0, y0):
         """Straight-line distance the base has driven since (x0, y0) in odom."""
@@ -1060,7 +1142,19 @@ class NavPickOrchestrator(Node):
         when forward AND lateral error settle at the same instant, which often never
         happened — the robot crept into the table and climbed it. Distance driven is pure
         geometry and stops every time.
+
+        STOP_MARGIN: the pickup dock's STOP_DISTANCE already leaves only ~1 mm of bumper
+        clearance above load_scene()'s own hard-coded minimum (verified 2026-08-13, same
+        razor-thin-margin pattern already found and fixed for the place table's
+        dock_range). The velocity law below never drops the commanded speed below
+        0.06 m/s, even in the final millimetre, and one more control cycle passes
+        between the stop decision and Twist() actually taking effect -- real overshoot,
+        not just a tight target. Stopping a controlled 1 cm short of the literal target
+        absorbs that overshoot; the arm's reach was measured usable up to 0.24-0.25 m,
+        so 1 cm of slack here costs nothing.
         """
+        STOP_MARGIN = 0.005
+        drive = max(0.0, drive - STOP_MARGIN)
         if drive <= 0.001:
             return
         for _ in range(20):
@@ -1278,6 +1372,9 @@ class NavPickOrchestrator(Node):
     def pin_base(self):
         """Capture current robot world pose and hold it at 50 Hz."""
         self.get_logger().info('=== Step 2: Pinning base ===')
+        if not self._base_pin_enabled:
+            self.get_logger().info('base_pin_enabled=false — skipping pin')
+            return False
         if not self._get_state.wait_for_service(timeout_sec=10.0):
             self.get_logger().warn('/get_entity_state unavailable — base will not be pinned')
             return False
@@ -1441,13 +1538,9 @@ class NavPickOrchestrator(Node):
         """
         self._weld_active = False
         cmd     = self._last_gripper[0]
-        # Close floor: bound the worst-case squeeze, independent of detection.
-        # Box contact is at actual ≈ -0.01 rad (measured, run_191027.log). The old
-        # floor of GRIPPER_GRASP[0] = -0.20 allowed 0.19 rad of grind whenever the
-        # stall detector missed — the visible "pushing so hard on the box". -0.06
-        # still closes 0.05 rad past contact (a firm hold; the physics joint has
-        # long since fired), but caps the crush even if no stall is ever detected.
-        floor   = -0.06
+        # Close floor: how far the fingers are allowed to travel if nothing ever
+        # reports contact. Live-tunable — see the declare_parameter comment above.
+        floor   = float(self.get_parameter('grasp_close_floor').value)
         lag_run = 0
         stall_angle = None
 
@@ -1672,9 +1765,17 @@ class NavPickOrchestrator(Node):
             self.get_logger().error(f'[{label}] goal rejected')
             return False
         res_fut = gh.get_result_async()
-        rclpy.spin_until_future_complete(self, res_fut, timeout_sec=30.0)
+        rclpy.spin_until_future_complete(self, res_fut, timeout_sec=EXEC_TIMEOUT_SEC)
         if not res_fut.done():
-            self.get_logger().error(f'[{label}] no result within 30 s')
+            # 2026-08-12: giving up here without cancelling left the goal running
+            # server-side while the orchestrator moved on and issued the NEXT command —
+            # an orphaned trajectory finishing late while a new one starts. Diagnosed
+            # after this exact class of bug (found in real_grasp_test.py the night
+            # before) recurred here, aborting a pick outright.
+            self.get_logger().error(
+                f'[{label}] no result within {EXEC_TIMEOUT_SEC:.0f} s — cancelling')
+            cancel_fut = gh.cancel_goal_async()
+            rclpy.spin_until_future_complete(self, cancel_fut, timeout_sec=5.0)
             return False
         ok = res_fut.result().result.error_code.val == MOVEIT_SUCCESS
         self.get_logger().info(f'[{label}] {"OK" if ok else "FAILED"}')
@@ -1695,6 +1796,113 @@ class NavPickOrchestrator(Node):
     def go_pose(self, x, y, z, q, label):
         self.get_logger().info(f'[{label}] planning…')
         return self._send(self._pose_constraints(x, y, z, q), label)
+
+    @staticmethod
+    def _retime(traj, scale=VEL_SCALE):
+        """Slow a Cartesian trajectory to the same speed every other motion uses.
+
+        GetCartesianPath on Humble has no max_velocity_scaling_factor field, so the
+        service hands back a trajectory timed at FULL speed, while every go_pose()
+        move runs at VEL_SCALE (0.2). Left alone, the descent onto the box would be
+        the fastest motion in the pipeline — the exact opposite of what a delicate
+        approach wants. Stretching time by 1/scale leaves the geometry untouched and
+        changes only how fast it is traversed.
+        """
+        k = 1.0 / max(float(scale), 1e-3)
+        for pt in traj.joint_trajectory.points:
+            t = (pt.time_from_start.sec + pt.time_from_start.nanosec * 1e-9) * k
+            pt.time_from_start.sec     = int(t)
+            pt.time_from_start.nanosec = int(round((t - int(t)) * 1e9))
+            pt.velocities    = [v / k for v in pt.velocities]
+            pt.accelerations = [a / (k * k) for a in pt.accelerations]
+        return traj
+
+    def go_pose_straight(self, x, y, z, q, label, min_fraction=CART_MIN_FRACTION):
+        """Move the TCP in a STRAIGHT LINE to (x, y, z), holding orientation `q`.
+
+        go_pose() hands MoveIt a goal CONSTRAINT and lets OMPL/RRTConnect find any
+        valid joint path to it. RRTConnect optimises for validity, not for the shape
+        the tool traces, so a commanded straight-down descent arrives along an arc —
+        measured at roughly half the commanded travel going sideways on a 60 mm
+        vertical move. Approaching a 35 mm box that way clips it before the fingers
+        are around it. This plans in TASK space instead, so the tool goes where it
+        was told to go.
+
+        Falls back to go_pose() — loudly — whenever a full Cartesian path cannot be
+        produced. A PARTIAL interpolation is worse than a joint-space plan: it would
+        stop the tool at some undefined fraction of the way instead of at the goal.
+        """
+        if not self.get_parameter('use_cartesian_descent').value:
+            return self.go_pose(x, y, z, q, label)
+
+        if not self._cart.service_is_ready():
+            self._cart.wait_for_service(timeout_sec=2.0)
+        if not self._cart.service_is_ready():
+            self.get_logger().warn(
+                f'[{label}] /compute_cartesian_path unavailable — joint-space fallback')
+            return self.go_pose(x, y, z, q, label)
+
+        target = Pose()
+        target.position = Point(x=float(x), y=float(y), z=float(z))
+        (target.orientation.x, target.orientation.y,
+         target.orientation.z, target.orientation.w) = (float(v) for v in q)
+
+        req = GetCartesianPath.Request()
+        req.header.frame_id  = PLANNING_FRAME
+        req.header.stamp     = self.get_clock().now().to_msg()
+        req.group_name       = ARM_GROUP
+        req.link_name        = TCP_LINK
+        req.waypoints        = [target]
+        req.max_step         = CART_MAX_STEP
+        req.jump_threshold   = 0.0     # 0 = disable the joint-space jump check
+        req.avoid_collisions = True
+
+        self.get_logger().info(f'[{label}] planning STRAIGHT line…')
+        fut = self._cart.call_async(req)
+        rclpy.spin_until_future_complete(self, fut, timeout_sec=10.0)
+        if not fut.done() or fut.result() is None:
+            self.get_logger().warn(
+                f'[{label}] cartesian service gave no answer — joint-space fallback')
+            return self.go_pose(x, y, z, q, label)
+
+        frac = float(fut.result().fraction)
+        if frac < min_fraction:
+            self.get_logger().warn(
+                f'[{label}] straight path only {frac * 100:.0f}% solvable '
+                f'(need {min_fraction * 100:.0f}%) — joint-space fallback, '
+                f'expect an arced approach on this move')
+            return self.go_pose(x, y, z, q, label)
+
+        goal = ExecuteTrajectory.Goal()
+        goal.trajectory = self._retime(fut.result().solution)
+
+        if not self._exec.wait_for_server(timeout_sec=5.0):
+            self.get_logger().warn(
+                f'[{label}] /execute_trajectory unavailable — joint-space fallback')
+            return self.go_pose(x, y, z, q, label)
+
+        send_fut = self._exec.send_goal_async(goal)
+        rclpy.spin_until_future_complete(self, send_fut, timeout_sec=15.0)
+        gh = send_fut.result() if send_fut.done() else None
+        if gh is None or not gh.accepted:
+            self.get_logger().warn(
+                f'[{label}] straight-line goal rejected — joint-space fallback')
+            return self.go_pose(x, y, z, q, label)
+
+        res_fut = gh.get_result_async()
+        rclpy.spin_until_future_complete(self, res_fut, timeout_sec=EXEC_TIMEOUT_SEC)
+        if not res_fut.done():
+            self.get_logger().error(
+                f'[{label}] straight-line move did not finish in '
+                f'{EXEC_TIMEOUT_SEC:.0f} s — cancelling')
+            cancel_fut = gh.cancel_goal_async()
+            rclpy.spin_until_future_complete(self, cancel_fut, timeout_sec=5.0)
+            return False
+
+        ok = res_fut.result().result.error_code.val == MOVEIT_SUCCESS
+        self.get_logger().info(
+            f'[{label}] STRAIGHT {"OK" if ok else "FAILED"} ({frac * 100:.0f}% interpolated)')
+        return ok
 
     def add_table(self, bx, by, bz):
         """Register the pickup table as a MoveIt collision object."""
@@ -1777,8 +1985,21 @@ class NavPickOrchestrator(Node):
         # The odometry-measured dock distance is the reliable target, so we trust it.
         # Try decreasing clearances rather than aborting on the first failure: "unreachable"
         # here usually means "too high", not "too far", and a lower hover still works.
+        #
+        # Order is informed by reach_map.csv (a prior offline reachability sweep) rather
+        # than always trying HOVER first: if a nearby pose is already known to fail, don't
+        # waste a live OMPL planning cycle finding that out again. This does NOT skip
+        # planning — go_pose() still calls MoveIt for whichever clearance is tried, and
+        # every clearance is still attempted in order if the reordered ones fail — it only
+        # changes which one goes first. See reach_lookup.py for why "outside the swept
+        # envelope" deliberately falls back to the original order instead of guessing.
+        clearance_order = reach_lookup.rank_clearances(tx, ty, tz, (HOVER, 0.045, 0.03))
+        if clearance_order != [HOVER, 0.045, 0.03]:
+            self.get_logger().info(
+                f'reach map reorders hover attempt to {clearance_order} '
+                f'(originally {[HOVER, 0.045, 0.03]})')
         hovered = False
-        for clearance in (HOVER, 0.045, 0.03):
+        for clearance in clearance_order:
             if self.go_pose(tx, ty, tz + clearance, q, f'hover {clearance:.3f} m'):
                 hovered = True
                 if clearance < HOVER:
@@ -1787,11 +2008,25 @@ class NavPickOrchestrator(Node):
                         f'table height and dock distance')
                 break
         if not hovered:
-            self.get_logger().error('no reachable hover above the box — aborting')
+            hit = reach_lookup.nearest(tx, ty, tz + HOVER)
+            if hit is None or hit[0] > reach_lookup.MAX_TRUST_DIST:
+                self.get_logger().error(
+                    f'no reachable hover above the box — aborting. Target ({tx:.3f}, '
+                    f'{ty:.3f}) is outside the characterized reach envelope '
+                    f'(reach_map.csv has no sample within {reach_lookup.MAX_TRUST_DIST} m) '
+                    f'— this looks like a bad target, not a genuine reach edge case.')
+            else:
+                self.get_logger().error(
+                    f'no reachable hover above the box — aborting. Nearest characterized '
+                    f'sample is {hit[0]:.3f} m away and was itself a failure — this is a '
+                    f'genuine reach-envelope edge, not a perception error.')
             return False
 
         # ── descend straight down to the grasp point ────────────────────────
-        if not self.go_pose(tx, ty, tz + GRASP_Z, q, 'grasp'):
+        # STRAIGHT is load-bearing here, not decorative. A joint-space plan to this
+        # same pose arrives along an arc, and the lateral component of that arc is
+        # what knocks the 35 mm box over before the fingers reach it.
+        if not self.go_pose_straight(tx, ty, tz + GRASP_Z, q, 'grasp'):
             self.get_logger().error('grasp pose failed — aborting')
             return False
 
@@ -1814,9 +2049,10 @@ class NavPickOrchestrator(Node):
                     f'[grasp] not verified — retry {attempt - 1}/{MAX_GRASP_RETRIES}')
                 self.attach(False)                      # drop any stale weld
                 self.set_gripper(GRIPPER_OPEN, 'open')
-                if not self.go_pose(tx, ty, tz + HOVER, q, 'hover for retry'):
+                if not self.go_pose_straight(tx, ty, tz + HOVER, q, 'hover for retry'):
                     break
-                if not self.go_pose(tx, ty, tz + GRASP_Z, q, f'grasp retry {attempt - 1}'):
+                if not self.go_pose_straight(tx, ty, tz + GRASP_Z, q,
+                                             f'grasp retry {attempt - 1}'):
                     break
 
             # True box height BEFORE the close — the reference for the ground-truth
@@ -1824,6 +2060,19 @@ class NavPickOrchestrator(Node):
             z_before = self._box_world_z()
 
             result = self.close_until_contact()
+
+            # Settle before the next MoveGroup plan (the lift, below). Ported from the
+            # 2026-08-11 grip_bench.py fix: close_until_contact() ends the moment the
+            # gripper stalls/finishes, but the ARM may still be micro-settling
+            # (residual servo motion, /joint_states lag). The lift plans from a
+            # "current state" snapshot; if that snapshot is stale by even a fraction of
+            # a degree, MoveIt's execution-time check (0.01 rad tolerance) rejects the
+            # whole trajectory and silently retries at a different clearance -- which
+            # looks like the arm "deciding" to move (e.g. the base joint rotating) for
+            # no reason right after the grasp closes, box already between the fingers.
+            for _ in range(5):
+                rclpy.spin_once(self, timeout_sec=0.1)
+            time.sleep(0.3)
 
             # AIR means the APERTURE never stalled. Whether that means "nothing is
             # between the fingers" depends on which grasp mechanism is running.
@@ -1850,10 +2099,16 @@ class NavPickOrchestrator(Node):
                     '[grasp] no aperture stall, but physics grasp is active — '
                     'lifting anyway and letting ground truth decide')
 
-            # Lift — retry 3× (OMPL can be flaky on the first attempt)
+            # Lift — retry 3× (OMPL can be flaky on the first attempt).
+            # STRAIGHT up: this is the motion whose shortfall was measured at 0.031 m
+            # against a commanded 0.060 m, because the joint-space plan arced and
+            # rotated instead of rising. With a task-space path the box should now
+            # actually rise what it was told to, which also restores the meaning of
+            # _verify_grasp_truth's min_rise threshold.
             lifted = False
             for clearance in (HOVER, 0.045, 0.03):
-                if self.go_pose(tx, ty, tz + clearance, q, f'lift {clearance:.3f} m'):
+                if self.go_pose_straight(tx, ty, tz + clearance, q,
+                                         f'lift {clearance:.3f} m'):
                     lifted = True
                     break
                 time.sleep(0.3)
@@ -1948,7 +2203,7 @@ class NavPickOrchestrator(Node):
         if not self.go_pose(sx, sy, hover_z, q, f'stack hover L{level}'):
             self.get_logger().error('stack hover failed — aborting place')
             return False
-        if not self.go_pose(sx, sy, place_z, q, f'stack place L{level}'):
+        if not self.go_pose_straight(sx, sy, place_z, q, f'stack place L{level}'):
             self.get_logger().error('stack place failed — aborting place')
             return False
 
@@ -1963,7 +2218,8 @@ class NavPickOrchestrator(Node):
 
         # Lift straight up off the placed box, then retract home.
         for attempt in range(3):
-            if self.go_pose(sx, sy, hover_z, q, f'stack retract L{level} (try {attempt + 1})'):
+            if self.go_pose_straight(sx, sy, hover_z, q,
+                                     f'stack retract L{level} (try {attempt + 1})'):
                 break
             time.sleep(0.5)
         self.go_named('home')
@@ -2019,13 +2275,198 @@ class NavPickOrchestrator(Node):
 
     # ── Tag-based dock controller ─────────────────────────────────────────────
 
+    @staticmethod
+    def _wrap(a):
+        return (a + math.pi) % (2 * math.pi) - math.pi
+
+    def _rotate_by(self, dyaw, timeout=8.0):
+        """Turn in place by `dyaw` radians (signed), closed-loop on odometry yaw.
+
+        The two pivots of a crab maneuver must cancel: whatever the first one gets
+        wrong shows up as heading error after the second, and Phase A has to take it
+        out again. Closing on odometry instead of timing the turn keeps that residue
+        small enough for a single re-square to absorb.
+        """
+        if self._odom_yaw is None:
+            rclpy.spin_once(self, timeout_sec=0.5)
+        if self._odom_yaw is None:
+            self.get_logger().warn('[dock B] no odometry yaw — cannot pivot precisely')
+            return False
+
+        target   = self._wrap(self._odom_yaw + dyaw)
+        deadline = time.time() + timeout
+        TOL      = 0.02   # rad ≈ 1.1°
+        while time.time() < deadline:
+            rclpy.spin_once(self, timeout_sec=0.05)
+            if self._odom_yaw is None:
+                continue
+            err = self._wrap(target - self._odom_yaw)
+            if abs(err) < TOL:
+                self._cmd_vel_pub.publish(Twist())
+                time.sleep(0.25)
+                return True
+            cmd = Twist()
+            w = max(-PLACE_DOCK_CRAB_ROT, min(PLACE_DOCK_CRAB_ROT, 2.0 * err))
+            if abs(w) < 0.25:          # same no-crawl rule as Phase A
+                w = math.copysign(0.25, w)
+            cmd.angular.z = w
+            self._cmd_vel_pub.publish(cmd)
+        self._cmd_vel_pub.publish(Twist())
+        time.sleep(0.25)
+        self.get_logger().warn(f'[dock B] pivot of {math.degrees(dyaw):+.0f}° timed out')
+        return False
+
+    def _drive_straight(self, dist, speed=PLACE_DOCK_CRAB_FWD, timeout=15.0):
+        """Drive forward `dist` metres (positive only), closed-loop on odom distance."""
+        if self._odom is None:
+            rclpy.spin_once(self, timeout_sec=0.5)
+        if self._odom is None:
+            self.get_logger().warn('[dock B] no odometry — cannot drive a measured leg')
+            return False
+
+        x0, y0   = self._odom
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            rclpy.spin_once(self, timeout_sec=0.05)
+            gone = self._odom_dist_since(x0, y0)
+            if gone is None:
+                continue
+            if gone >= dist:
+                self._cmd_vel_pub.publish(Twist())
+                time.sleep(0.25)
+                return True
+            cmd = Twist()
+            cmd.linear.x = speed
+            self._cmd_vel_pub.publish(cmd)
+        self._cmd_vel_pub.publish(Twist())
+        time.sleep(0.25)
+        self.get_logger().warn(f'[dock B] straight leg of {dist:.3f} m timed out')
+        return False
+
+    def _centre_on_tag_normal(self):
+        """Phase B — shift the base sideways onto the tag's face-normal line.
+
+        Assumes Phase A has already squared the heading, which is what makes the
+        tag's y in base_link equal to the signed lateral offset. Corrects it with a
+        crab: pivot 90° toward the offset, drive it, pivot back. The drive leg is
+        perpendicular to the approach axis, so this never carries the robot toward
+        the table.
+
+        Iterates: each pass re-measures from the tag, so odometry error in one leg is
+        removed by the next rather than accumulating. Returns True if the base ended
+        inside PLACE_DOCK_LAT_TOL of the line.
+        """
+        if not self.get_parameter('dock_lateral_align').value:
+            self.get_logger().info('Phase B: disabled by parameter — skipping')
+            return True
+
+        for i in range(PLACE_DOCK_LAT_ITERS):
+            t = self._read_tag_live()
+            if t is None:
+                self.get_logger().warn('Phase B: tag not visible — skipping lateral centring')
+                return False
+            _, ty, tag_range, _, _ = t
+
+            if abs(ty) <= PLACE_DOCK_LAT_TOL:
+                self.get_logger().info(
+                    f'Phase B: centred ✓ lateral offset {ty * 1000:+.0f} mm '
+                    f'(tol ±{PLACE_DOCK_LAT_TOL * 1000:.0f} mm)')
+                return True
+
+            if abs(ty) > PLACE_DOCK_LAT_MAX:
+                self.get_logger().error(
+                    f'Phase B: lateral offset reads {ty:+.3f} m, beyond the '
+                    f'{PLACE_DOCK_LAT_MAX:.2f} m sanity limit — refusing to crab on '
+                    f'what is probably a bad tag reading. Continuing uncentred.')
+                return False
+
+            self.get_logger().info(
+                f'Phase B (pass {i + 1}/{PLACE_DOCK_LAT_ITERS}): off the normal line by '
+                f'{ty * 1000:+.0f} mm at range {tag_range:.2f} m — crabbing across')
+
+            pivot = math.copysign(math.pi / 2.0, ty)   # +y is left, so +ty ⇒ turn left
+            if not self._rotate_by(pivot):
+                return False
+            if not self._drive_straight(abs(ty)):
+                return False
+            if not self._rotate_by(-pivot):
+                return False
+
+            # The pivots leave a little heading error; take it out before the next
+            # measurement, or the ty we read will not mean "lateral offset" any more.
+            self._square_to_tag(timeout=5.0)
+
+        t = self._read_tag_live()
+        resid = abs(t[1]) if t else None
+        if resid is not None and resid <= PLACE_DOCK_LAT_TOL:
+            self.get_logger().info(f'Phase B: centred ✓ residual {resid * 1000:.0f} mm')
+            return True
+        self.get_logger().warn(
+            f'Phase B: still {"%.0f mm" % (resid * 1000) if resid is not None else "unknown"} '
+            f'off after {PLACE_DOCK_LAT_ITERS} passes — approaching anyway')
+        return False
+
+    def _square_to_tag(self, timeout=8.0):
+        """Phase A — rotate in place until the chassis is squared to the tag FACE.
+
+        Squaring on yaw (not bearing) is the load-bearing alignment: the
+        tag_dock_estimator convention has the tag's Z axis point out of the face
+        toward the robot, so a squarely-facing robot sees tag yaw ≈ π in base_link
+        (heading_err = wrap(yaw − π) → 0). Bearing alone only centres the tag ahead —
+        if the robot is not exactly on the face-normal line, that still leaves the
+        chassis angled to the face.
+
+        Returns (aligned, tag_seen).
+        """
+        self.get_logger().info('Phase A: squaring to tag face…')
+        ok_count = 0
+        tag_seen = False
+        aligned  = False
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            t = self._read_tag_live()
+            if t is None:
+                self._cmd_vel_pub.publish(Twist())
+                self.get_logger().info('Phase A: no tag — stopping', throttle_duration_sec=1.0)
+                time.sleep(0.1)
+                continue
+            tag_seen = True
+            _, _, tag_range, bearing, yaw = t
+            err = self._wrap(yaw - math.pi)
+            self.get_logger().info(
+                f'Phase A: bearing={math.degrees(bearing):+.1f}° '
+                f'heading_err={math.degrees(err):+.1f}° range={tag_range:.3f}m',
+                throttle_duration_sec=0.5)
+            if abs(err) < PLACE_DOCK_YAW_TOL:
+                ok_count += 1
+                if ok_count >= 4:
+                    self.get_logger().info('Phase A: aligned ✓')
+                    aligned = True
+                    break
+            else:
+                ok_count = 0
+            cmd = Twist()
+            w = max(-PLACE_DOCK_MAX_ROT,
+                    min(PLACE_DOCK_MAX_ROT, PLACE_DOCK_K_ROT * err))
+            if abs(w) < PLACE_DOCK_MIN_ROT:      # never crawl; see PLACE_DOCK_MIN_ROT
+                w = math.copysign(PLACE_DOCK_MIN_ROT, w)
+            cmd.angular.z = w
+            self._cmd_vel_pub.publish(cmd)
+            time.sleep(0.05)
+        self._cmd_vel_pub.publish(Twist())
+        time.sleep(0.3)
+        return aligned, tag_seen
+
     def dock_to_tag(self):
         """Closed-loop dock to the AprilTag on the place table face.
 
-        Phase A — face (load-bearing): rotate in place, closed-loop on the tag's
-                  bearing AND yaw until the chassis is squared to the face.
-                  This must be tight: a straight approach amplifies heading error
-                  into lateral offset, and the arm must absorb any residual.
+        Phase A — face: rotate in place until the chassis is squared to the tag face.
+        Phase B — centre: crab sideways until the chassis sits ON the face-normal
+                  line. Without this the robot squares up wherever Nav2 left it and
+                  drives in parallel to the correct line, arriving offset by however
+                  far off-centre it started.
+        Phase A' — re-square: the crab's two pivots leave a little heading error, and
+                  Phase C amplifies heading into lateral error over a ~1.3 m run.
         Phase C — straight approach: drive forward with yaw trims keeping the tag
                   centred, until tag range ≤ dock_range.
         Phase D — latch: record drop (x,y) and tag_yaw for the arm.
@@ -2038,56 +2479,19 @@ class NavPickOrchestrator(Node):
         def clamp(v, lo, hi):
             return max(lo, min(hi, v))
 
-        def wrap(a):
-            return (a + math.pi) % (2 * math.pi) - math.pi
+        # ── Phase A: square to the tag face ──────────────────────────────────────
+        # tag_seen tracks whether ANY reading arrived — if the tag was never visible
+        # from the Nav2 stop (too far / wrong angle), skip the rest instead of burning
+        # 30 s printing "tag lost".
+        _, tag_seen = self._square_to_tag(timeout=8.0)
 
-        # ── Phase A: rotate until the chassis is squared to the tag FACE ────────
-        # Squaring on yaw (not bearing) is the actual "load-bearing" alignment: the
-        # tag_dock_estimator convention has the tag's Z axis point out of the face
-        # toward the robot, so a squarely-facing robot sees tag yaw ≈ π in base_link
-        # (heading_err = wrap(yaw-π) → 0). Bearing alone only centres the tag ahead —
-        # if the robot isn't exactly on the face-normal line (Nav2 tolerance), that
-        # leaves the chassis angled to the face, which Phase C's straight approach
-        # then amplifies into lateral placement error. Phase C's own bearing-based
-        # trim still corrects small residual drift while driving in.
-        # 8 s timeout. tag_seen tracks whether ANY reading arrived — if the tag was
-        # never visible at all from the Nav2 stop (too far / wrong angle), we skip
-        # Phase C immediately instead of burning another 30 s printing "tag lost".
-        self.get_logger().info('Phase A: squaring to tag face…')
-        ok_count = 0
-        tag_seen  = False
-        deadline = time.time() + 8.0
-        while time.time() < deadline:
-            t = self._read_tag_live()
-            if t is None:
-                self._cmd_vel_pub.publish(Twist())
-                self.get_logger().info('Phase A: no tag — stopping', throttle_duration_sec=1.0)
-                time.sleep(0.1)
-                continue
-            tag_seen = True
-            _, _, tag_range, bearing, yaw = t
-            heading_err = wrap(yaw - math.pi)
-            err = heading_err
-            self.get_logger().info(
-                f'Phase A: bearing={math.degrees(bearing):+.1f}° '
-                f'heading_err={math.degrees(heading_err):+.1f}° range={tag_range:.3f}m',
-                throttle_duration_sec=0.5)
-            if abs(err) < PLACE_DOCK_YAW_TOL:
-                ok_count += 1
-                if ok_count >= 4:
-                    self.get_logger().info('Phase A: aligned ✓')
-                    break
-            else:
-                ok_count = 0
-            cmd = Twist()
-            w = clamp(PLACE_DOCK_K_ROT * err, -PLACE_DOCK_MAX_ROT, PLACE_DOCK_MAX_ROT)
-            if abs(w) < PLACE_DOCK_MIN_ROT:      # never crawl; see PLACE_DOCK_MIN_ROT
-                w = PLACE_DOCK_MIN_ROT if w >= 0 else -PLACE_DOCK_MIN_ROT
-            cmd.angular.z = w
-            self._cmd_vel_pub.publish(cmd)
-            time.sleep(0.05)
-        self._cmd_vel_pub.publish(Twist())
-        time.sleep(0.3)
+        # ── Phase B + A': centre on the normal line, then re-square ──────────────
+        # Done HERE, at the ~1.3 m Nav2 standoff, not close in: there is room for the
+        # crab maneuver, the tag is comfortably in frame, and any residual gets one
+        # more correction from Phase C's trim on the way in.
+        if tag_seen:
+            self._centre_on_tag_normal()
+            self._square_to_tag(timeout=5.0)
 
         if not tag_seen:
             # Tag never appeared — skip Phase C (would just print "tag lost" for 30 s)
@@ -2106,7 +2510,18 @@ class NavPickOrchestrator(Node):
             # slipping the wheels and corrupting the odometry the drop point is
             # computed from. Bail out as soon as the range stops improving.
             STALL_EPS  = 0.005   # m of progress that counts as "still moving"
-            STALL_SEC  = 2.0     # no progress for this long → we are blocked
+            # Distance-aware, not a single constant. 2026-08-11 tightened this to 0.5 s
+            # everywhere to stop the wheels grinding into the table after real contact
+            # (only ~1 cm of designed bumper clearance) -- but applied to the WHOLE
+            # approach, it also fires on ordinary AprilTag reading noise during the long
+            # cruise-in from ~1.7 m out, aborting almost immediately ("no progress for
+            # 0 s") and latching a drop point from a meter+ away with a garbage yaw.
+            # Diagnosed 2026-08-12 from exactly that log line. Fix: patient while far
+            # away (cruising, noise is expected and harmless), tight only once close
+            # enough that a real physical blockage is the actual risk.
+            STALL_SEC_FAR   = 2.0
+            STALL_SEC_CLOSE = 0.5
+            STALL_CLOSE_RANGE = 0.15   # m of `remaining` below which "tight" applies
             best_range = float('inf')
             last_gain  = time.time()
             while time.time() < deadline:
@@ -2125,13 +2540,15 @@ class NavPickOrchestrator(Node):
                     self.get_logger().info(f'Phase C: docked at range={tag_range:.3f} m ✓')
                     break
                 # ── stall guard (see STALL_EPS above) ────────────────────────
+                stall_sec = (STALL_SEC_CLOSE if remaining < STALL_CLOSE_RANGE
+                             else STALL_SEC_FAR)
                 if tag_range < best_range - STALL_EPS:
                     best_range = tag_range
                     last_gain  = time.time()
-                elif time.time() - last_gain > STALL_SEC:
+                elif time.time() - last_gain > stall_sec:
                     self.get_logger().warn(
                         f'Phase C: STALLED at range={tag_range:.3f} m (target '
-                        f'{dock_range:.3f} m) — no progress for {STALL_SEC:.0f} s. '
+                        f'{dock_range:.3f} m) — no progress for {stall_sec:.1f} s. '
                         f'The chassis cannot get closer; stopping here rather than '
                         f'grinding the wheels.')
                     break
@@ -2377,7 +2794,10 @@ class NavPickOrchestrator(Node):
             return False
 
         # ── descend to place height ───────────────────────────────────────────────
-        if not self.go_pose(px, py, place_z, q, f'place set L{level}'):
+        # Straight down, same reason as the grasp descent — and more so once there is
+        # a box already on the table: an arced approach sweeps the held box sideways
+        # into the stack it is meant to land on.
+        if not self.go_pose_straight(px, py, place_z, q, f'place set L{level}'):
             # Unlike the hover failure above, here the arm IS over the table --
             # the hover pose succeeded. Releasing drops the box a few centimetres
             # onto the target rather than throwing it across the room, so this is
@@ -2396,10 +2816,11 @@ class NavPickOrchestrator(Node):
         self.set_gripper(GRIPPER_OPEN, 'release')
         time.sleep(0.5)   # let box settle
 
-        # Lift clear of the placed box
+        # Lift clear of the placed box — straight up, so the retreating gripper does
+        # not sweep the box it has just released off the table.
         for attempt in range(3):
-            if self.go_pose(px, py, hover_z, q,
-                            f'place retract L{level} (try {attempt + 1})'):
+            if self.go_pose_straight(px, py, hover_z, q,
+                                     f'place retract L{level} (try {attempt + 1})'):
                 break
             time.sleep(0.3)
 
@@ -2658,6 +3079,12 @@ class NavPickOrchestrator(Node):
             self.pin_base()
 
         # 6. Back up and write metrics
+        # place_box() leaves the arm at 'home' (all joints zero — the pose the
+        # 'travel' comment elsewhere calls the pendulum "worst case"), not a
+        # driving-safe pose. Every other transition in this file goes to 'travel'
+        # before moving the base; this one didn't, so the robot could clip the
+        # just-placed box/table while backing out. Match the existing pattern.
+        self.go_named('travel')
         self.back_up()
         self.flush_metrics()
 

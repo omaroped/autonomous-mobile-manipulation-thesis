@@ -16,8 +16,9 @@ Uses thesis_map.yaml (pre-built SLAM map).
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, TimerAction
+from launch.actions import DeclareLaunchArgument, RegisterEventHandler
 from launch.conditions import IfCondition
+from launch.event_handlers import OnProcessExit
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node, LifecycleNode
 
@@ -83,27 +84,42 @@ def generate_launch_description():
     nav_nodes = ['planner_server', 'controller_server', 'smoother_server',
                  'behavior_server', 'bt_navigator', 'waypoint_follower', 'velocity_smoother']
 
-    # Delay 6 s before starting the lifecycle manager so map_server has time to
-    # fully parse the PGM and register its change_state service.  Without this
-    # the lifecycle manager's internal 5 s service-call timeout fires before
-    # map_server is ready, causing "Failed to change state for node: map_server"
-    # and aborting the entire Nav2 bringup.
-    lifecycle_amcl = TimerAction(period=6.0, actions=[Node(
+    # Wait for map_server's OWN service to exist before starting the lifecycle
+    # manager, instead of guessing a fixed delay. The old code waited a flat 6 s;
+    # on a loaded machine (Gazebo + RViz + camera all starting together) that
+    # guess sometimes wasn't enough, the lifecycle manager's change_state call
+    # timed out before map_server had even registered its service, Nav2
+    # bring-up aborted silently, and RViz showed no costmap with the robot
+    # refusing to move — intermittent, because it depended on machine load at
+    # that exact moment. This waits for the real event instead of the clock.
+    wait_for_map_server = Node(
+        package='limo_car', executable='wait_for_lifecycle_node',
+        name='wait_for_map_server', output='screen',
+        arguments=['map_server'])
+
+    lifecycle_amcl_node = Node(
         package='nav2_lifecycle_manager', executable='lifecycle_manager',
         name='lifecycle_manager_navigation', output='screen', condition=is_amcl,
         parameters=[{'use_sim_time': use_sim_time, 'autostart': True, 'bond_timeout': 0.0,
-                     'node_names': ['map_server', 'amcl'] + nav_nodes}])])
+                     'node_names': ['map_server', 'amcl'] + nav_nodes}])
 
-    lifecycle_gt = TimerAction(period=6.0, actions=[Node(
+    lifecycle_gt_node = Node(
         package='nav2_lifecycle_manager', executable='lifecycle_manager',
         name='lifecycle_manager_navigation', output='screen', condition=is_gt,
         parameters=[{'use_sim_time': use_sim_time, 'autostart': True, 'bond_timeout': 0.0,
-                     'node_names': ['map_server'] + nav_nodes}])])
+                     'node_names': ['map_server'] + nav_nodes}])
+
+    # Both candidate lifecycle managers are attached to the SAME wait process —
+    # only one of the two actually starts, gated by is_amcl/is_gt on the Node
+    # itself, exactly as before.
+    start_lifecycle_managers = RegisterEventHandler(OnProcessExit(
+        target_action=wait_for_map_server,
+        on_exit=[lifecycle_amcl_node, lifecycle_gt_node]))
 
     return LaunchDescription([
         declare_use_sim, declare_drive_mode, declare_localization,
         map_server,
         amcl, gt_map_to_odom,
         planner, controller, smoother, behaviors, bt_nav, waypoint, vel_smoother,
-        lifecycle_amcl, lifecycle_gt,
+        wait_for_map_server, start_lifecycle_managers,
     ])

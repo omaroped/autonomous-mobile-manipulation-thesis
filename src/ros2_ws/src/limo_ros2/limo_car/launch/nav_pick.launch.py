@@ -131,6 +131,16 @@ def generate_launch_description():
     pickup   = scene['pickup_table']
     derived  = scene['derived']
 
+    # 2026-08-10: derived['dock_range'] leaves only ~1.1 cm of bumper clearance
+    # (dock_range - bumper_x), just 1 mm above load_scene()'s own hard-coded
+    # minimum (bumper_x + bumper_clearance). That margin is smaller than one
+    # control tick's travel at PLACE_DOCK_MAX_FWD, so the chassis was hitting the
+    # table. Pad the ACTUAL commanded stop distance by 1 cm without touching the
+    # scene-derived value load_scene() validates -- the box lands ~1 cm off dead
+    # centre (toward the robot) instead, well within the 8x8 cm table for a 4x4 cm box.
+    PLACE_DOCK_EXTRA_CLEARANCE = 0.01
+    dock_range_padded = derived['dock_range'] + PLACE_DOCK_EXTRA_CLEARANCE
+
     spawn_y = LaunchConfiguration('spawn_y', default='7.0')
     use_rviz = LaunchConfiguration('use_rviz', default='true')
     use_gzclient = LaunchConfiguration('use_gzclient', default='true')
@@ -140,9 +150,10 @@ def generate_launch_description():
     # Derived in load_scene() from arm_reach and place_table.side. Overridable
     # on the command line for experiments, but the default is always consistent
     # with the scene -- it can no longer be a stale literal.
-    dock_range = LaunchConfiguration('dock_range', default=str(derived['dock_range']))
+    dock_range = LaunchConfiguration('dock_range', default=str(dock_range_padded))
     metrics_csv = LaunchConfiguration('metrics_csv', default='')
     use_physics_grasp = LaunchConfiguration('use_physics_grasp', default='true')
+    base_pin_enabled = LaunchConfiguration('base_pin_enabled', default='true')
 
     # ── Argument declarations ─────────────────────────────────────────────────
     spawn_y_arg = DeclareLaunchArgument(
@@ -173,10 +184,14 @@ def generate_launch_description():
                     '(the world has 3 distinct stack_box_N boxes on the pickup table).')
 
     dock_range_arg = DeclareLaunchArgument(
-        'dock_range', default_value=str(derived['dock_range']),
+        'dock_range', default_value=str(dock_range_padded),
         description=f"AprilTag dock stop distance (m). DERIVED from config/scene.yaml "
                     f"as arm_reach - place_table.side/2 = {derived['dock_range']:.3f}, "
-                    f"leaving a {derived['bumper_gap']*1000:.0f} mm bumper gap. "
+                    f"plus a {PLACE_DOCK_EXTRA_CLEARANCE*1000:.0f} mm safety pad added "
+                    f"2026-08-10 (the raw derived value left only "
+                    f"{derived['bumper_gap']*1000:.0f} mm of bumper clearance -- too "
+                    f"tight, the chassis was hitting the table). Effective bumper gap "
+                    f"now ~{(derived['bumper_gap'] + PLACE_DOCK_EXTRA_CLEARANCE)*1000:.0f} mm. "
                     f"Do not hardcode: a value below "
                     f"{scene['robot']['bumper_x']:.3f} m is physically unreachable and "
                     f"the robot will grind its wheels against the table.")
@@ -195,6 +210,13 @@ def generate_launch_description():
                     'The two mechanisms MUST NOT run together — the teleport fights the '
                     'joint solver. This one flag switches both the launch graph and the '
                     "orchestrator's release logic, so they cannot disagree.")
+
+    base_pin_enabled_arg = DeclareLaunchArgument(
+        'base_pin_enabled', default_value='true',
+        description='true = base is teleport-held at 50 Hz during arm motion (default). '
+                    'false = pin_base() is a no-op — experiment to see whether/how much '
+                    'the base actually creeps under arm reaction forces with nothing '
+                    'holding it.')
 
     # Preserve the real top-level use_rviz BEFORE the gazebo include can touch it.
     # ackermann_gazebo.launch.py declares its OWN 'use_rviz' argument too, and the
@@ -347,7 +369,9 @@ def generate_launch_description():
                           # orchestrator's release logic can never disagree with which
                           # grasp mechanism is actually running.
                           'use_physics_grasp': ParameterValue(
-                              use_physics_grasp, value_type=bool)}])])
+                              use_physics_grasp, value_type=bool),
+                          'base_pin_enabled': ParameterValue(
+                              base_pin_enabled, value_type=bool)}])])
 
     return LaunchDescription([
         spawn_y_arg,
@@ -359,6 +383,7 @@ def generate_launch_description():
         dock_range_arg,
         metrics_csv_arg,
         use_physics_grasp_arg,
+        base_pin_enabled_arg,
         preserve_use_rviz,
         gazebo,
         moveit_launch,

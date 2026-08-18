@@ -167,12 +167,22 @@ class GazeboGraspFix : public ModelPlugin {
       if (!best_obj.empty()) AttachObject(best_obj);
     } else {
       // ---- holding: release when gripper opens ----
+      // Debounced the same way the attach side already is (grasp_count_threshold_
+      // sustained ticks). Diagnosed 2026-08-11: a bare single-tick "gpos >
+      // release_position_" check has no hysteresis against the held object's own
+      // reaction load -- the gripper joint's reported position micro-oscillates
+      // around that threshold under load (ordinary servo/joint compliance), so it
+      // released, immediately re-contacted (the fingers never actually opened),
+      // re-attached, and repeated -- 524 ON/OFF messages in one trial, each a
+      // physics discontinuity, which is what was throwing the arm/box around.
       double gpos = 0.0;
       physics::JointPtr gj = model_->GetJoint(gripper_joint_name_);
       if (gj) gpos = gj->Position(0);
       if (gpos > release_position_) {
-        ReleaseObject();
+        release_streak_ += 1;
+        if (release_streak_ >= grasp_count_threshold_) ReleaseObject();
       } else {
+        release_streak_ = 0;
         // optional sanity: if the object link vanished (deleted), release
         if (!held_obj_link_ || !held_obj_link_->GetParentModel())
           ReleaseObject();
@@ -220,6 +230,7 @@ class GazeboGraspFix : public ModelPlugin {
     // clear counters so they don't immediately re-trigger
     grip_count_.clear();
     release_count_.clear();
+    release_streak_ = 0;
 
     gzmsg << "[GazeboGraspFix] GRASP ON — fixed joint '" << palm_link_name_
           << "' <-> '" << obj_model_name << "'\n";
@@ -267,6 +278,7 @@ class GazeboGraspFix : public ModelPlugin {
   std::string gripper_joint_name_;
   double release_position_;
   int grasp_count_threshold_;
+  int release_streak_ = 0;   // consecutive ticks with gpos > release_position_
 
   transport::NodePtr node_;
   transport::SubscriberPtr contacts_sub_;

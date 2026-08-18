@@ -330,6 +330,13 @@ class GripBench(Node):
         st.name = self._p('box_name')
         st.pose.position = Point(x=x, y=y, z=z)
         st.pose.orientation.w = 1.0
+        # Explicitly zero the twist -- same reason as the robot reset above: a
+        # teleport that keeps the box's old velocity (from being shoved/dropped in
+        # the previous trial) launches it again the instant physics resumes, right
+        # next to the arm. Missing here was the likely cause of the box "flying"
+        # between trials. Diagnosed 2026-08-11.
+        st.twist.linear.x = st.twist.linear.y = st.twist.linear.z = 0.0
+        st.twist.angular.x = st.twist.angular.y = st.twist.angular.z = 0.0
         st.reference_frame = 'world'
         req = SetEntityState.Request()
         req.state = st
@@ -717,6 +724,19 @@ class GripBench(Node):
         self.report_box_distance()
 
         stall, lf, rf, bf, samples = self.close_and_watch()
+
+        # Settle before the next MoveGroup plan. close_and_watch() ends the moment
+        # the gripper stalls/finishes, but the ARM itself may still be micro-settling
+        # (residual servo motion, /joint_states lag). The lift request below plans
+        # from a "current state" snapshot; if that snapshot is stale by even a
+        # fraction of a degree, MoveIt's execution-time check (0.01 rad tolerance)
+        # rejects the whole trajectory and it silently retries at a different
+        # clearance -- which looks like the arm "adapting"/wobbling for no reason
+        # right after the grasp closes. Diagnosed 2026-08-11 from an actual reject:
+        # "expected: -1.2959, current: -1.27459" on joint2_to_joint1.
+        for _ in range(5):
+            rclpy.spin_once(self, timeout_sec=0.1)
+        time.sleep(0.3)
 
         # 4. Optional one-step back-off (suspect 4).
         if bool(self._p('backoff')):

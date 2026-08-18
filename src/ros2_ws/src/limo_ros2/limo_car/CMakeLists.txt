@@ -28,16 +28,10 @@ install(
   DESTINATION share/${PROJECT_NAME}
 )
 
-install(PROGRAMS scripts/limo_pick_place.py
-  RENAME limo_pick_place DESTINATION lib/${PROJECT_NAME})
 install(PROGRAMS scripts/box_follower.py
   RENAME box_follower DESTINATION lib/${PROJECT_NAME})
-install(PROGRAMS scripts/limo_mycobot_teleop.py
-  RENAME limo_mycobot_teleop DESTINATION lib/${PROJECT_NAME})
 install(PROGRAMS scripts/box_pose_estimator.py
   RENAME box_pose_estimator DESTINATION lib/${PROJECT_NAME})
-install(PROGRAMS scripts/pick_orchestrator.py
-  RENAME pick_orchestrator DESTINATION lib/${PROJECT_NAME})
 install(PROGRAMS scripts/base_joint_state_pub.py
   RENAME base_joint_state_pub DESTINATION lib/${PROJECT_NAME})
 install(PROGRAMS scripts/arm_grasp_test.py
@@ -50,25 +44,20 @@ install(PROGRAMS scripts/reach_sweep.py
   RENAME reach_sweep DESTINATION lib/${PROJECT_NAME})
 install(PROGRAMS scripts/nav_pick_orchestrator.py
   RENAME nav_pick_orchestrator DESTINATION lib/${PROJECT_NAME})
+# No RENAME: nav_pick_orchestrator imports this by module name ("import reach_lookup"),
+# which only resolves at runtime if the file keeps its .py name in the same install dir.
+install(PROGRAMS scripts/reach_lookup.py DESTINATION lib/${PROJECT_NAME})
 
-install(PROGRAMS scripts/slam_wanderer.py
-  RENAME slam_wanderer DESTINATION lib/${PROJECT_NAME})
-install(PROGRAMS scripts/place_only_test.py
-  RENAME place_only_test DESTINATION lib/${PROJECT_NAME})
 install(PROGRAMS scripts/smart_grasp.py
   RENAME smart_grasp DESTINATION lib/${PROJECT_NAME})
 install(PROGRAMS scripts/calibrate_contact_angle.py
   RENAME calibrate_contact_angle DESTINATION lib/${PROJECT_NAME})
 install(PROGRAMS scripts/calib_pick.py
   RENAME calib_pick DESTINATION lib/${PROJECT_NAME})
-install(PROGRAMS scripts/place_scenario.py
-  RENAME place_scenario DESTINATION lib/${PROJECT_NAME})
 
 # ── Fiducial place pipeline ────────────────────────────────────────────────
 install(PROGRAMS scripts/tag_dock_estimator.py
   RENAME tag_dock_estimator DESTINATION lib/${PROJECT_NAME})
-install(PROGRAMS scripts/ik_place_check.py
-  RENAME ik_place_check DESTINATION lib/${PROJECT_NAME})
 # gen_apriltag.py is a one-shot generator (run once, not a ROS node)
 install(PROGRAMS scripts/gen_apriltag.py
   RENAME gen_apriltag DESTINATION lib/${PROJECT_NAME})
@@ -86,6 +75,12 @@ install(PROGRAMS scripts/cam_track_pick_test.py
 # between the fingers each trial so the grip is measured with zero centring error.
 install(PROGRAMS scripts/grip_bench.py
   RENAME grip_bench DESTINATION lib/${PROJECT_NAME})
+
+# wait_for_lifecycle_node.py — blocks nav2_limo.launch.py's lifecycle manager
+# start until map_server is actually ready, replacing a fixed 6 s guess that
+# intermittently fired too early on a loaded machine.
+install(PROGRAMS scripts/wait_for_lifecycle_node.py
+  RENAME wait_for_lifecycle_node DESTINATION lib/${PROJECT_NAME})
 
 # (mecanum_bridge.py intentionally NOT installed — it was only for the abandoned
 #  mecanum/planar_move drive; the diff-drive base needs no cmd_vel/odom bridge.)
