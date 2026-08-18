@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+Forces Fast-DDS to use ONLY the Tailscale interface for all traffic (discovery AND
+actual topic data), on the LAPTOP. Needed because this laptop has many other active
+interfaces (wlo1, several docker0/br-* bridges) that Fast-DDS would otherwise also
+advertise and try, and the WiFi one specifically cannot reach the Jetson peer-to-peer
+(confirmed: multicast asymmetric, node discovery via a plain Discovery Server works,
+but topic/data-plane traffic does not -- consistent with the WiFi path being blocked
+for direct UDP between these two machines beyond what SSH/TCP needs).
+
+Used together with ROS_DISCOVERY_SERVER (still needed: Tailscale is point-to-point,
+not multicast-capable, so the default multicast-based participant discovery cannot
+work over it at all -- the Discovery Server replaces THAT with a client-server
+handshake, while this file makes sure the actual UDP packets, for both the server
+handshake and the subsequent peer-to-peer data, go out over Tailscale specifically.)
+
+Usage: export FASTRTPS_DEFAULT_PROFILES_FILE=<path to this file>, before launching
+any ROS2 process on the laptop.
+-->
+<dds xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+    <profiles>
+        <transport_descriptors>
+            <transport_descriptor>
+                <transport_id>udp_tailscale</transport_id>
+                <type>UDPv4</type>
+                <interfaceWhiteList>
+                    <address>100.117.113.52</address>
+                </interfaceWhiteList>
+            </transport_descriptor>
+        </transport_descriptors>
+
+        <participant profile_name="tailscale_only" is_default_profile="true">
+            <rtps>
+                <userTransports>
+                    <transport_id>udp_tailscale</transport_id>
+                </userTransports>
+                <useBuiltinTransports>false</useBuiltinTransports>
+            </rtps>
+        </participant>
+    </profiles>
+</dds>

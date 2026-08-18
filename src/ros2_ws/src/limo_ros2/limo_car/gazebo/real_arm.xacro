@@ -1,0 +1,83 @@
+<?xml version="1.0"?>
+<!-- real_arm.xacro — minimal real-hardware robot description: arm + gripper only.
+
+     Parallel to ackermann_with_sensor.xacro (the sim entry point), stripped to exactly
+     what Phase 1 needs. Deliberately does NOT include:
+       - ackermann.xacro (Gazebo diff-drive base + plugin — the real base is driven by
+         its own separate limo_base driver, not ros2_control, on the robot itself)
+       - sensor.xacro (Gazebo lidar/camera/IMU plugins — the real sensors are driven by
+         ydlidar_ros2_driver / OrbbecSDK_ROS2, already verified working independently)
+       - mycobot_ros2_control.xacro (the GAZEBO ros2_control block)
+     Includes, UNCHANGED from the sim file, so link names match the SRDF exactly:
+       - the arm URDF (mycobot_description) — same file, same macro
+       - the adaptive gripper URDF (mycobot_description) — same file, same macro
+       - the mycobot_base_joint / gripper_to_arm_joint / gripper_base_to_tcp offsets —
+         copied verbatim; gripper_base_to_tcp in particular carries the 2026-08-01 TCP
+         calibration and must stay numerically identical to sim or every grasp height
+         in the code (calibrated against that exact point) is wrong on hardware.
+     Adds, in place of the Gazebo pieces:
+       - a plain base_link (no visual/collision — Phase 1 only needs a valid root frame
+         for the arm to hang off; the real chassis description is a Phase 4 concern)
+       - mycobot_ros2_control_real.xacro (the MOCK hardware block) instead of the
+         Gazebo one, parameterised by initial_positions_file so it always reads the
+         freshly-captured real pose, never a hardcoded value baked into this file.
+-->
+<!-- name MUST be "limo_ackermann": the SRDF (limo_cobot.srdf) hardcodes this exact
+     name and requires it to match the URDF's <robot name> verbatim, regardless of
+     what this file itself describes. -->
+<robot name="limo_ackermann" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:arg name="initial_positions_file"
+             default="$(find limo_cobot_moveit_config)/config/initial_positions.yaml"/>
+
+  <!-- base_footprint -> base_link, copied verbatim from ackermann.xacro's
+       limo_ackermann macro (xyz="0 0 0.15"). Required, not cosmetic: the SRDF's
+       virtual_joint fixes world->base_footprint (limo_cobot.srdf), so without this
+       link move_group refuses to start ("Virtual joint does not attach to a link
+       on the robot"). Both links are TF-only, no visual/collision, matching the
+       gripper_tcp pattern already used in ackermann_with_sensor.xacro. -->
+  <link name="base_footprint"/>
+  <joint name="base_joint" type="fixed">
+    <parent link="base_footprint"/>
+    <child link="base_link"/>
+    <origin xyz="0.0 0.0 0.15" rpy="0 0 0"/>
+  </joint>
+  <link name="base_link"/>
+
+  <!-- ************************* MyCobot 280 Arm ************************ -->
+  <xacro:include filename="$(find mycobot_description)/urdf/mycobot_280_m5/mycobot_280_m5.urdf" />
+  <xacro:mycobot_280 />
+
+  <joint name="mycobot_base_joint" type="fixed">
+    <!-- Identical to ackermann_with_sensor.xacro — do not diverge from sim's mount. -->
+    <origin xyz="-0.03 0 0.02" rpy="0 0 1.5708"/>
+    <parent link="base_link"/>
+    <child link="joint1"/>
+  </joint>
+
+  <!-- ************************* MyCobot Adaptive Gripper *************** -->
+  <xacro:include filename="$(find mycobot_description)/urdf/adaptive_gripper/mycobot_adaptive_gripper.urdf" />
+  <xacro:mycobot_gripper />
+
+  <joint name="gripper_to_arm_joint" type="fixed">
+    <origin xyz="0.0 0 0.034" rpy="1.579 0 1.5708"/>
+    <parent link="joint6_flange"/>
+    <child link="gripper_base"/>
+  </joint>
+
+  <!-- ************************* Grasp Frame (TCP) ********************** -->
+  <link name="gripper_tcp"/>
+  <joint name="gripper_base_to_tcp" type="fixed">
+    <!-- MUST match ackermann_with_sensor.xacro's calibrated value exactly — see that
+         file's comment for the full derivation. This is the point every grasp height
+         in nav_pick_orchestrator.py is calibrated against. -->
+    <origin xyz="0 0.06 0" rpy="0 0 0"/>
+    <parent link="gripper_base"/>
+    <child link="gripper_tcp"/>
+  </joint>
+
+  <!-- ************************* ROS 2 Control (mock hardware) *********** -->
+  <xacro:include filename="$(find limo_car)/gazebo/mycobot_ros2_control_real.xacro" />
+  <xacro:mycobot_real_ros2_control initial_positions_file="$(arg initial_positions_file)"/>
+
+</robot>

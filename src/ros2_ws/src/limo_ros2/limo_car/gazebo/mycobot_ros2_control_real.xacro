@@ -1,0 +1,136 @@
+<?xml version="1.0"?>
+<!-- mycobot_ros2_control_real.xacro — arm hardware interface for REAL hardware, no Gazebo.
+
+     Parallel to mycobot_ros2_control.xacro (the Gazebo version), which uses
+     <plugin>gazebo_ros2_control/GazeboSystem</plugin>. The ONLY thing that differs
+     between sim and real here is that one line: everything downstream of it — the
+     SRDF, kinematics.yaml, joint_limits.yaml, moveit_controllers.yaml,
+     mycobot_controllers.yaml, and arm_bridge.py — is unmodified and shared, because
+     MoveIt and ros2_control only ever talk to a controller through the standard
+     FollowJointTrajectory / joint command interface, never to Gazebo directly.
+
+     <plugin>mock_components/GenericSystem</plugin> is a standard, built-in ROS 2
+     component: it echoes back whatever position it was just commanded as the current
+     state, instantly. There is no real hardware feedback loop here — this is the same
+     "lightweight mirror, not a full ros2_control SystemInterface" decision already
+     made for arm_bridge.py (2026-07-21): the mock hardware produces a valid
+     /joint_states stream for MoveIt and RViz to work against, and arm_bridge.py
+     mirrors that stream onto the real arm over serial, unchanged, no code here needs
+     to know the real arm exists at all.
+
+     initial_positions MUST be the arm's real current pose, not a placeholder — see
+     config/initial_positions.yaml's own header comment for why. Loaded dynamically
+     here (not hardcoded) so refreshing that file before each session is enough; nothing
+     in this xacro needs editing between sessions. Pattern copied directly from the
+     vendor's own mock-hardware example:
+     mycobot_ros2/mycobot_280/mycobot_280_moveit2/config/firefighter.ros2_control.xacro
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:macro name="mycobot_real_ros2_control" params="initial_positions_file">
+    <xacro:property name="initial_positions"
+                     value="${xacro.load_yaml(initial_positions_file)['initial_positions']}"/>
+
+    <ros2_control name="MyCobotRealSystem" type="system">
+      <hardware>
+        <plugin>mock_components/GenericSystem</plugin>
+      </hardware>
+
+      <!-- Arm joints — names, order, and initial-value keys match
+           config/initial_positions.yaml and the Gazebo xacro exactly. -->
+      <joint name="joint2_to_joint1">
+        <command_interface name="position"/>
+        <state_interface name="position">
+          <param name="initial_value">${initial_positions['joint2_to_joint1']}</param>
+        </state_interface>
+        <state_interface name="velocity"/>
+      </joint>
+      <joint name="joint3_to_joint2">
+        <command_interface name="position"/>
+        <state_interface name="position">
+          <param name="initial_value">${initial_positions['joint3_to_joint2']}</param>
+        </state_interface>
+        <state_interface name="velocity"/>
+      </joint>
+      <joint name="joint4_to_joint3">
+        <command_interface name="position"/>
+        <state_interface name="position">
+          <param name="initial_value">${initial_positions['joint4_to_joint3']}</param>
+        </state_interface>
+        <state_interface name="velocity"/>
+      </joint>
+      <joint name="joint5_to_joint4">
+        <command_interface name="position"/>
+        <state_interface name="position">
+          <param name="initial_value">${initial_positions['joint5_to_joint4']}</param>
+        </state_interface>
+        <state_interface name="velocity"/>
+      </joint>
+      <joint name="joint6_to_joint5">
+        <command_interface name="position"/>
+        <state_interface name="position">
+          <param name="initial_value">${initial_positions['joint6_to_joint5']}</param>
+        </state_interface>
+        <state_interface name="velocity"/>
+      </joint>
+      <joint name="joint6output_to_joint6">
+        <command_interface name="position"/>
+        <state_interface name="position">
+          <param name="initial_value">${initial_positions['joint6output_to_joint6']}</param>
+        </state_interface>
+        <state_interface name="velocity"/>
+      </joint>
+
+      <!-- Gripper — same joint set as the Gazebo xacro, driven the same way: NOT
+           through MoveIt (moveit_controllers.yaml deliberately excludes the gripper),
+           directly via /mycobot_gripper_controller/commands, which arm_bridge.py
+           already subscribes to unchanged. Initial value 0.0 is fine here — unlike
+           the arm joints, a wrong gripper starting value has no snap risk (bounded,
+           low-force motion) and isn't safety-critical the way the arm's pose is. -->
+      <joint name="gripper_controller">
+        <command_interface name="position"/>
+        <state_interface name="position"><param name="initial_value">0.0</param></state_interface>
+        <state_interface name="velocity"/>
+      </joint>
+      <joint name="gripper_base_to_gripper_left2">
+        <command_interface name="position">
+          <param name="min">-0.8</param>
+          <param name="max">0.5</param>
+        </command_interface>
+        <state_interface name="position"><param name="initial_value">0.0</param></state_interface>
+        <state_interface name="velocity"/>
+      </joint>
+      <joint name="gripper_left3_to_gripper_left1">
+        <command_interface name="position">
+          <param name="min">-0.5</param>
+          <param name="max">0.5</param>
+        </command_interface>
+        <state_interface name="position"><param name="initial_value">0.0</param></state_interface>
+        <state_interface name="velocity"/>
+      </joint>
+      <joint name="gripper_base_to_gripper_right3">
+        <command_interface name="position">
+          <param name="min">-0.15</param>
+          <param name="max">0.7</param>
+        </command_interface>
+        <state_interface name="position"><param name="initial_value">0.0</param></state_interface>
+        <state_interface name="velocity"/>
+      </joint>
+      <joint name="gripper_base_to_gripper_right2">
+        <command_interface name="position">
+          <param name="min">-0.5</param>
+          <param name="max">0.8</param>
+        </command_interface>
+        <state_interface name="position"><param name="initial_value">0.0</param></state_interface>
+        <state_interface name="velocity"/>
+      </joint>
+      <joint name="gripper_right3_to_gripper_right1">
+        <command_interface name="position">
+          <param name="min">-0.5</param>
+          <param name="max">0.5</param>
+        </command_interface>
+        <state_interface name="position"><param name="initial_value">0.0</param></state_interface>
+        <state_interface name="velocity"/>
+      </joint>
+    </ros2_control>
+  </xacro:macro>
+</robot>

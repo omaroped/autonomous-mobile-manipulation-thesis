@@ -1,0 +1,22 @@
+# real_scene.yaml — real-world table positions in the lab room, in the `map` frame.
+#
+# Companion to the sim's config/scene.yaml (pickup_table.centre_map / place_table.centre_map),
+# but measured on real hardware against the map saved at ~/maps/lab_room.pgm/.yaml on the robot
+# (2026-08-14 mapping session, 0.05 m resolution).
+#
+# Captured by driving the robot to each location and reading the live map -> base_link
+# transform from cartographer (robot's position at that moment, not a separate table-only
+# measurement -- treat as "where the robot was when docked at each table", same convention
+# the sim uses for nav_approach poses).
+
+pickup_table:
+  map_x: -0.155
+  map_y: -1.657
+  yaw_deg: -78.8
+
+place_table:
+  map_x: -0.343
+  map_y: 1.211
+  yaw_deg: 103.3
+
+map_file: /home/agilex/maps/lab_room.yaml
