@@ -770,8 +770,11 @@ class NavPickOrchestrator(Node):
     def _activate_nav2_cmdvel(self):
         """Re-activate the Nav2 cmd_vel nodes (in case a previous mission
         deactivated them for docking) so navigation can drive again."""
-        for node in ('controller_server', 'velocity_smoother', 'behavior_server',
-                     'collision_monitor'):
+        # velocity_smoother and collision_monitor dropped 2026-08-26: neither is
+        # launched any more (they formed a chain that was never connected -- see
+        # nav2_limo.launch.py). collision_monitor in particular never existed, which
+        # is why every run logged "collision_monitor/change_state unavailable".
+        for node in ('controller_server', 'behavior_server'):
             cli = self.create_client(ChangeState, f'/{node}/change_state')
             if not cli.wait_for_service(timeout_sec=3.0):
                 continue
@@ -974,11 +977,19 @@ class NavPickOrchestrator(Node):
 
     def _silence_nav2_cmdvel(self):
         """Deactivate the Nav2 nodes that publish /cmd_vel so the orchestrator can
-        own the topic during docking. collision_monitor publishes safety-stop zeros
-        when it receives no input on cmd_vel_smoothed (after smoother deactivates),
-        which overrides direct dock-drive commands."""
-        for node in ('collision_monitor', 'velocity_smoother', 'controller_server',
-                     'behavior_server'):
+        own the topic during docking.
+
+        Trimmed 2026-08-26 from four nodes to two. The list used to lead with
+        collision_monitor and velocity_smoother, on the belief that the chain
+        controller -> smoother -> monitor -> cmd_vel was live and had to be torn down
+        to free the topic. It was not: collision_monitor was configured but never
+        launched, so cmd_vel_smoothed had no consumer and the smoother's output went
+        nowhere. Only controller_server and behavior_server were ever really in the
+        command path. Both dead nodes are now removed from the launch entirely, so
+        asking for their lifecycle services just logged a warning every run
+        ("collision_monitor/change_state unavailable — skipping").
+        """
+        for node in ('controller_server', 'behavior_server'):
             cli = self.create_client(ChangeState, f'/{node}/change_state')
             if not cli.wait_for_service(timeout_sec=3.0):
                 self.get_logger().warn(f'{node}/change_state unavailable — skipping')

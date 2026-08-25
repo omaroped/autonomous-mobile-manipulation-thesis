@@ -106,11 +106,30 @@ def generate_launch_description():
     behaviors    = lnode('nav2_behaviors',         'behavior_server',   'behavior_server')
     bt_nav       = lnode('nav2_bt_navigator',      'bt_navigator',      'bt_navigator')
     waypoint     = lnode('nav2_waypoint_follower', 'waypoint_follower', 'waypoint_follower')
-    vel_smoother = lnode('nav2_velocity_smoother', 'velocity_smoother', 'velocity_smoother')
 
-    # ── Lifecycle managers — one WITH amcl (amcl mode), one WITHOUT (gt mode) ──
+    # velocity_smoother and collision_monitor REMOVED 2026-08-26.
+    #
+    # They formed a command chain that was never connected: controller_server
+    # publishes cmd_vel, velocity_smoother consumed cmd_vel and published
+    # cmd_vel_smoothed, and NOTHING consumed cmd_vel_smoothed -- because
+    # collision_monitor, the node that would have bridged it back to cmd_vel, was
+    # configured in nav2_limo_diff.yaml but never listed here, so it never ran. The
+    # base has always been driven by the controller's raw output, and the smoother's
+    # tuned acceleration limits applied to nothing at all.
+    #
+    # Deleted rather than completed, deliberately. Enabling collision_monitor would
+    # have put a node whose entire job is to slow the robot near obstacles onto
+    # /cmd_vel -- the same topic the orchestrator writes directly during docking --
+    # while its lidar watches a table the dock approaches to 11 mm of bumper
+    # clearance. It would also make the smoother's never-exercised acceleration
+    # limits suddenly live. Both are real behaviour changes to a working pipeline, in
+    # exchange for a safety net that has never once functioned.
+    #
+    # The wiring now matches what actually runs. If obstacle safety is wanted later
+    # (a good idea on real hardware), add it back deliberately and test the dock
+    # against it -- do not simply restore this list.
     nav_nodes = ['planner_server', 'controller_server', 'smoother_server',
-                 'behavior_server', 'bt_navigator', 'waypoint_follower', 'velocity_smoother']
+                 'behavior_server', 'bt_navigator', 'waypoint_follower']
 
     # Wait for map_server's OWN service to exist before starting the lifecycle
     # manager, instead of guessing a fixed delay. The old code waited a flat 6 s;
@@ -149,6 +168,6 @@ def generate_launch_description():
         declare_init_x, declare_init_y, declare_init_yaw,
         map_server,
         amcl, gt_map_to_odom,
-        planner, controller, smoother, behaviors, bt_nav, waypoint, vel_smoother,
+        planner, controller, smoother, behaviors, bt_nav, waypoint,
         wait_for_map_server, start_lifecycle_managers,
     ])

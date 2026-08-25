@@ -37,6 +37,9 @@ def main():
     # all -- reintroducing the exact race this script exists to remove, and
     # surfacing downstream as "Unable to start transition 3 from current state
     # active" on controller_server / velocity_smoother / behavior_server.
+    # (velocity_smoother was still launched when that was observed; it was removed on
+    # 2026-08-26 -- see nav2_limo.launch.py. The failure above is unchanged, it just
+    # names one node that no longer exists.)
     names = remove_ros_args(sys.argv)[1:]
     if not names:
         print('wait_for_lifecycle_node: no node names given', file=sys.stderr)

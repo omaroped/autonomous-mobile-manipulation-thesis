@@ -40,9 +40,9 @@ import cv2
 import numpy as np
 
 
-# HSV range for the vivid blue Gazebo box (same as box_follower / limo_pick_place)
-BLUE_HSV_LO = np.array([110, 150,  50])
-BLUE_HSV_HI = np.array([130, 255, 255])
+# HSV range for target box (widened to detect light blue physical boxes & ambient room lighting)
+BLUE_HSV_LO = np.array([85,  30,  40])
+BLUE_HSV_HI = np.array([135, 255, 255])
 
 MIN_CONTOUR_AREA = 30          # px², ignore noise
 TARGET_FRAME     = 'base_link'  # MoveIt arm-planning frame
@@ -182,7 +182,11 @@ class BoxPoseEstimator(Node):
 
     def _depth_cb(self, msg: Image):
         try:
-            self._depth = self.bridge.imgmsg_to_cv2(msg, '32FC1')
+            if msg.encoding == '16UC1':
+                depth_mm = self.bridge.imgmsg_to_cv2(msg, '16UC1')
+                self._depth = depth_mm.astype(np.float32) / 1000.0
+            else:
+                self._depth = self.bridge.imgmsg_to_cv2(msg, '32FC1')
             self._depth_frame = msg.header.frame_id
         except Exception as e:
             self.get_logger().warn(f'depth convert failed: {e}', throttle_duration_sec=5.0)
@@ -201,12 +205,9 @@ class BoxPoseEstimator(Node):
 
         h, w = bgr.shape[:2]
         depth = self._depth
-        # Guard against rgb/depth resolution mismatch.
+        # Handle rgb/depth resolution mismatch (e.g. Orbbec DaBai 640x480 RGB vs 640x400 depth).
         if depth.shape[0] != h or depth.shape[1] != w:
-            self.get_logger().warn(
-                f'rgb {w}x{h} vs depth {depth.shape[1]}x{depth.shape[0]} size mismatch',
-                throttle_duration_sec=5.0)
-            return
+            depth = cv2.resize(depth, (w, h), interpolation=cv2.INTER_NEAREST)
 
         candidates = self._detect_box_pixels(bgr, depth, h, w)
         if not candidates:
