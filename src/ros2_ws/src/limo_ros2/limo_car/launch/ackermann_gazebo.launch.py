@@ -42,6 +42,17 @@ def generate_launch_description():
         'use_gzclient', default_value='true',
         description='Whether to launch Gazebo client (GUI)')
 
+    # spawn_x and spawn_yaw were hardcoded in the spawn command until 2026-08-25,
+    # so only spawn_y could be moved -- and moving it desynchronised the robot from
+    # AMCL's seed, which is written from the same pose. All three are arguments now
+    # and nav_pick.launch.py passes them from scene.yaml's robot.spawn_pose.
+    spawn_x_arg = DeclareLaunchArgument(
+        'spawn_x', default_value='-2.0',
+        description='Robot spawn X in the map/world frame')
+    spawn_yaw_arg = DeclareLaunchArgument(
+        'spawn_yaw', default_value='-1.5708',
+        description='Robot spawn yaw (rad) in the map/world frame')
+
     spawn_y_arg = DeclareLaunchArgument(
         'spawn_y', default_value='7.0',
         description='Robot spawn Y (m). 7.0 = at the table (isolated grasp test); '
@@ -143,7 +154,10 @@ def generate_launch_description():
              '-entity', 'mbot',
              # z≈0 so the wheels start essentially on the ground; with real diff-drive
              # physics the base settles onto its wheels under gravity (small, clean drop).
-             '-x', '-2.0', '-y', LaunchConfiguration('spawn_y'), '-z', '0.0', '-Y', '-1.5708'],
+             '-x', LaunchConfiguration('spawn_x'),
+             '-y', LaunchConfiguration('spawn_y'),
+             '-z', '0.0',
+             '-Y', LaunchConfiguration('spawn_yaw')],
         output='screen'
     )
 
@@ -172,7 +186,9 @@ def generate_launch_description():
     return LaunchDescription([
         world_arg,
         rviz_arg,
+        spawn_x_arg,
         spawn_y_arg,
+        spawn_yaw_arg,
         use_rviz_arg,
         use_gzclient_arg,
         drive_mode_arg,

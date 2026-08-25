@@ -125,7 +125,12 @@ def load_scene(pkg):
                 f"  world file : {wx} x {wy} x {wz}\n"
                 f"  Change BOTH together.")
 
+    sp = rb.get('spawn_pose', {'x': -2.0, 'y': 7.0, 'yaw': -1.5708})
+
     s['derived'] = {
+        'spawn_x':                float(sp['x']),
+        'spawn_y':                float(sp['y']),
+        'spawn_yaw':              float(sp['yaw']),
         'dock_range':             dock_range,
         'place_y_dock':           place_y_dock,
         'stop_distance':          stop_dist,
@@ -174,7 +179,18 @@ def generate_launch_description():
     PLACE_DOCK_EXTRA_CLEARANCE = 0.0
     dock_range_padded = derived['dock_range'] + PLACE_DOCK_EXTRA_CLEARANCE
 
-    spawn_y = LaunchConfiguration('spawn_y', default='7.0')
+    # Defaults come from scene.yaml's robot.spawn_pose, so there is one place to
+    # change the start pose and the Gazebo spawn, AMCL's seed and everything derived
+    # from it move together. Override all three on the command line to test off-spawn
+    # behaviour:  ros2 launch limo_car nav_pick.launch.py spawn_y:=5.5
+    spawn_x   = LaunchConfiguration('spawn_x',   default=str(derived['spawn_x']))
+    spawn_y   = LaunchConfiguration('spawn_y',   default=str(derived['spawn_y']))
+    spawn_yaw = LaunchConfiguration('spawn_yaw', default=str(derived['spawn_yaw']))
+    # Which localization the whole pipeline runs. This was NOT passed through to
+    # nav2_limo.launch.py until 2026-08-25, so the include always took that file's
+    # own default (ground_truth) and AMCL was unreachable from the full pipeline --
+    # every navigation result so far was measured with a perfect map->odom transform.
+    localization = LaunchConfiguration('localization', default='ground_truth')
     use_rviz = LaunchConfiguration('use_rviz', default='true')
     use_gzclient = LaunchConfiguration('use_gzclient', default='true')
     drive_mode = LaunchConfiguration('drive_mode', default='diff')
@@ -192,6 +208,18 @@ def generate_launch_description():
     base_pin_enabled = LaunchConfiguration('base_pin_enabled', default='true')
 
     # ── Argument declarations ─────────────────────────────────────────────────
+    spawn_x_arg = DeclareLaunchArgument(
+        'spawn_x', default_value=str(derived['spawn_x']),
+        description='Robot spawn X (map frame). Default from scene.yaml robot.spawn_pose.')
+    spawn_yaw_arg = DeclareLaunchArgument(
+        'spawn_yaw', default_value=str(derived['spawn_yaw']),
+        description='Robot spawn yaw, rad (map frame). Default from scene.yaml.')
+    localization_arg = DeclareLaunchArgument(
+        'localization', default_value='ground_truth',
+        description='ground_truth = static identity map->odom (perfect, sim only). '
+                    'amcl = real LiDAR localization against the map. Use amcl with '
+                    'odometry_source:=0 for the honest hardware rehearsal.')
+
     spawn_y_arg = DeclareLaunchArgument(
         'spawn_y', default_value='7.0',
         description='Robot spawn Y. Default 7.0 → 3 m from the table (nav problem).')
@@ -274,7 +302,9 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(
             os.path.join(pkg, 'launch', 'ackermann_gazebo.launch.py')),
         launch_arguments={
+            'spawn_x': spawn_x,
             'spawn_y': spawn_y,
+            'spawn_yaw': spawn_yaw,
             'use_rviz': 'false',
             'use_gzclient': use_gzclient,
             'drive_mode': drive_mode,
@@ -302,6 +332,15 @@ def generate_launch_description():
             launch_arguments={
                 'use_sim_time': 'true',
                 'drive_mode': drive_mode,
+                # Passthrough added 2026-08-25. Without it this include silently took
+                # nav2_limo.launch.py's own default and AMCL could not be reached from
+                # the full pipeline at all.
+                'localization': localization,
+                # AMCL's seed is the SAME pose Gazebo spawns the robot at, so moving
+                # the spawn can no longer leave the filter believing something else.
+                'initial_pose_x': spawn_x,
+                'initial_pose_y': spawn_y,
+                'initial_pose_yaw': spawn_yaw,
             }.items())])
 
     # ── 4. box_pose_estimator — delay 15 s ───────────────────────────────────
@@ -426,7 +465,10 @@ def generate_launch_description():
                               base_pin_enabled, value_type=bool)}])])
 
     return LaunchDescription([
+        spawn_x_arg,
         spawn_y_arg,
+        spawn_yaw_arg,
+        localization_arg,
         use_rviz_arg,
         use_gzclient_arg,
         drive_mode_arg,

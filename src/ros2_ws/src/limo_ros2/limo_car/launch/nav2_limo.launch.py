@@ -21,6 +21,7 @@ from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node, LifecycleNode
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -41,6 +42,20 @@ def generate_launch_description():
         'use_sim_time', default_value='true', description='Use simulation clock')
     declare_drive_mode = DeclareLaunchArgument(
         'drive_mode', default_value='diff', description='Drive mode (ackermann | diff)')
+    # AMCL's initial guess. Defaults match nav2_limo_diff.yaml's set_initial_pose
+    # block, so launching this file standalone behaves exactly as before; when
+    # nav_pick.launch.py drives it, these carry scene.yaml's robot.spawn_pose so the
+    # seed and the actual spawn can no longer disagree.
+    declare_init_x = DeclareLaunchArgument(
+        'initial_pose_x', default_value='-2.0',
+        description="AMCL initial pose X (ignored under localization:=ground_truth)")
+    declare_init_y = DeclareLaunchArgument(
+        'initial_pose_y', default_value='7.0',
+        description="AMCL initial pose Y (ignored under localization:=ground_truth)")
+    declare_init_yaw = DeclareLaunchArgument(
+        'initial_pose_yaw', default_value='-1.5708',
+        description="AMCL initial pose yaw (ignored under localization:=ground_truth)")
+
     declare_localization = DeclareLaunchArgument(
         'localization', default_value='ground_truth',
         description='ground_truth (static map->odom, sim) | amcl (LiDAR localization)')
@@ -55,7 +70,20 @@ def generate_launch_description():
     amcl = LifecycleNode(
         package='nav2_amcl', executable='amcl', name='amcl',
         namespace='', output='screen', condition=is_amcl,
-        parameters=[params_file, {'use_sim_time': use_sim_time}])
+        # The dict entries override the yaml (later parameter sources win), so the
+        # seed follows the launch arguments rather than the frozen constants in
+        # nav2_limo_diff.yaml. Nested yaml keys are addressed with dotted names.
+        parameters=[params_file, {
+            'use_sim_time':      use_sim_time,
+            'set_initial_pose':  True,
+            'initial_pose.x':    ParameterValue(LaunchConfiguration('initial_pose_x'),
+                                                value_type=float),
+            'initial_pose.y':    ParameterValue(LaunchConfiguration('initial_pose_y'),
+                                                value_type=float),
+            'initial_pose.z':    0.0,
+            'initial_pose.yaw':  ParameterValue(LaunchConfiguration('initial_pose_yaw'),
+                                                value_type=float),
+        }])
 
     # ── Localization option B: ground truth (static map->odom identity) ───────
     # odom == world == map in sim (diff_drive odometry_source=WORLD), so identity
@@ -118,6 +146,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         declare_use_sim, declare_drive_mode, declare_localization,
+        declare_init_x, declare_init_y, declare_init_yaw,
         map_server,
         amcl, gt_map_to_odom,
         planner, controller, smoother, behaviors, bt_nav, waypoint, vel_smoother,

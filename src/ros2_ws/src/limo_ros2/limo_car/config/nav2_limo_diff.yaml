@@ -51,6 +51,12 @@ amcl:
     z_short: 0.05
     scan_topic: /scan
     set_initial_pose: true   # auto-localize at startup (no manual /initialpose needed; avoids the sim-time stamp-drop)
+    # FALLBACK ONLY, since 2026-08-25. nav_pick.launch.py overrides all four values
+    # below from scene.yaml's robot.spawn_pose, so the seed always matches where
+    # Gazebo actually put the robot. These are only used if nav2_limo.launch.py is
+    # started on its own without the initial_pose_* arguments. Do not edit them to
+    # change the start pose -- edit scene.yaml robot.spawn_pose instead, or the two
+    # will silently disagree, which is the bug this arrangement exists to prevent.
     initial_pose:
       x: -2.0
       y: 7.0

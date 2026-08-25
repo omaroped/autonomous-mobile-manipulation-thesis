@@ -47,6 +47,25 @@ robot:
   # so every mm of clearance is a mm the arm cannot place with.
   bumper_clearance: 0.010
 
+  # Where the robot is placed when the simulation starts (map frame == world frame
+  # in this scene). SINGLE SOURCE OF TRUTH as of 2026-08-25.
+  #
+  # This value used to be written out in four separate places -- the Gazebo spawn
+  # command, the spawn_y launch argument, the orchestrator's /initialpose publisher,
+  # and AMCL's set_initial_pose block -- of which only two responded to the spawn_y
+  # launch argument. Launching with spawn_y:=5.5 therefore moved the robot but left
+  # AMCL seeded at 7.0, i.e. believing it was 1.5 m from where it actually was. Under
+  # ground-truth localization that is invisible (the map->odom transform is identity
+  # and ignores the robot's pose entirely), which is exactly why it survived: the only
+  # mode the pipeline could run was the mode that cannot notice.
+  #
+  # Everything downstream now derives from here, and the spawn_x/spawn_y/spawn_yaw
+  # launch arguments override it together for off-spawn testing.
+  spawn_pose:
+    x:    -2.0
+    y:     7.0
+    yaw:  -1.5708          # facing -Y, i.e. toward the pickup table
+
   # base_link height above ground (world frame), MEASURED in Gazebo
   # (gz model -m mbot -p; = 0.15 URDF - 5mm wheel settle). Confirmed in
   # docs/HARDWARE_TO_MEASURE.md, docs/experiment_log.md, docs/VERIFICATION_REGISTER.md.

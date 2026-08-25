@@ -42,7 +42,7 @@ from rclpy.action import ActionClient
 from rclpy.duration import Duration
 
 from geometry_msgs.msg import (PoseStamped, Pose, Point, PointStamped,
-                                PoseWithCovarianceStamped, Twist)
+                                Twist)
 from std_msgs.msg import Float64MultiArray, Bool, Float64
 from action_msgs.msg import GoalStatus
 from nav_msgs.msg import Odometry
@@ -329,10 +329,6 @@ class NavPickOrchestrator(Node):
 
         # Nav2
         self._nav = ActionClient(self, NavigateToPose, '/navigate_to_pose')
-
-        # AMCL initial pose publisher
-        self._init_pose_pub = self.create_publisher(
-            PoseWithCovarianceStamped, '/initialpose', 10)
 
         # MoveIt
         self._move  = ActionClient(self, MoveGroup, '/move_action')
@@ -754,39 +750,6 @@ class NavPickOrchestrator(Node):
 
     # ── Step 1: Navigate ──────────────────────────────────────────────────────
 
-    def _publish_initial_pose(self):
-        """Tell AMCL where the robot starts (spawn pose)."""
-        msg = PoseWithCovarianceStamped()
-        msg.header.frame_id = 'map'
-        msg.header.stamp = self.get_clock().now().to_msg()
-        msg.pose.pose.position.x = -2.0
-        msg.pose.pose.position.y =  7.0
-        msg.pose.pose.position.z =  0.0
-        # yaw −π/2 → quaternion (0, 0, sin(−π/4), cos(−π/4)) = (0, 0, −0.7071, 0.7071)
-        msg.pose.pose.orientation.z = -0.7071
-        msg.pose.pose.orientation.w =  0.7071
-        # diagonal covariance — position known within ±0.5 m, yaw within ±0.2 rad
-        msg.pose.covariance[0]  = 0.25
-        msg.pose.covariance[7]  = 0.25
-        msg.pose.covariance[35] = 0.04
-
-        # Wait for AMCL to subscribe to /initialpose
-        self.get_logger().info('Waiting for AMCL to subscribe to /initialpose...')
-        for _ in range(30):
-            if self._init_pose_pub.get_subscription_count() > 0:
-                self.get_logger().info('AMCL subscribed! Publishing initial pose...')
-                break
-            time.sleep(0.5)
-            # Spin to allow discovery to proceed
-            rclpy.spin_once(self, timeout_sec=0.1)
-
-        for _ in range(10):    # publish several times so AMCL receives it
-            msg.header.stamp = self.get_clock().now().to_msg()
-            self._init_pose_pub.publish(msg)
-            time.sleep(0.1)
-            rclpy.spin_once(self, timeout_sec=0.05)
-        self.get_logger().info('published AMCL initial pose at (−2, 7, yaw=−π/2)')
-
     def _activate_nav2_cmdvel(self):
         """Re-activate the Nav2 cmd_vel nodes (in case a previous mission
         deactivated them for docking) so navigation can drive again."""
@@ -803,8 +766,14 @@ class NavPickOrchestrator(Node):
     def navigate_to_table(self):
         self.get_logger().info('=== Step 1: Navigate to table ===')
         self._activate_nav2_cmdvel()
-        self._publish_initial_pose()
-        time.sleep(1.0)   # give AMCL a moment to digest the initial pose
+        # The orchestrator no longer seeds AMCL. It used to publish a HARDCODED
+        # (-2.0, 7.0, -pi/2) to /initialpose here, which was wrong twice over: dead
+        # under ground-truth localization (no AMCL exists to subscribe, so the 15 s
+        # wait loop below it just stalled every run), and redundant under AMCL, which
+        # is already seeded by set_initial_pose in nav2_limo_diff.yaml. Worse, the
+        # constant did not track the spawn_y launch argument, so moving the robot left
+        # this publishing the old pose. Seeding now happens in exactly one place --
+        # nav2_limo.launch.py, from scene.yaml's robot.spawn_pose.
 
         if not self._nav.wait_for_server(timeout_sec=30.0):
             self.get_logger().error(
