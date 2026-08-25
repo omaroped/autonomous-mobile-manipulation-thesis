@@ -84,6 +84,25 @@ SEARCH_Y_ABS_DEFAULT = 0.60    # ~the FOV half-width at max range (0.92·tan34°
 SEARCH_Z_MIN_DEFAULT = -0.10   # 0.115 m below the expected box centre
 SEARCH_Z_MAX_DEFAULT = 0.20    # 0.185 m above it
 
+# ── Size plausibility ────────────────────────────────────────────────────────
+# A blob's apparent area is fixed by geometry: a BOX_EDGE-wide object at depth d
+# subtends BOX_EDGE * fx / d pixels, so its area should be about the square of that.
+# Anything far smaller at the same depth is a fragment -- a specular highlight, or a
+# piece of a box whose mask broke up -- not the object.
+#
+# This gate exists because target_policy picks by POSITION ('rightmost') or by depth
+# ('nearest'), never by size, so a speck could and did win. Measured 2026-08-25: with
+# three boxes on the table the detector targeted a 321 px^2 blob at 0.155 m camera
+# range, where a real box subtends ~11500 px^2 -- about 3% of a box. The arm drove to
+# it, the gripper closed on empty air beside the real box ("swept to the close limit
+# with NO resistance"), and the pick failed all three attempts.
+#
+# The fraction is deliberately generous. At grasp range the gripper fingers occlude
+# part of the box, and the top face is viewed obliquely, so a genuine box can read
+# well under its ideal area -- but not by an order of magnitude.
+BOX_EDGE_M          = 0.035   # collision box edge (worlds/final_map.world)
+MIN_AREA_FRACTION   = 0.15    # of the geometrically expected area at that depth
+
 
 class BoxPoseEstimator(Node):
 
@@ -124,6 +143,9 @@ class BoxPoseEstimator(Node):
         self.declare_parameter('search_z_max', SEARCH_Z_MAX_DEFAULT)
         self.declare_parameter('depth_min', DEPTH_MIN_DEFAULT)
         self.declare_parameter('depth_max', DEPTH_MAX_DEFAULT)
+        # Live-tunable: raise to reject more aggressively, set 0.0 to disable.
+        #   ros2 param set /box_pose_estimator min_area_fraction 0.25
+        self.declare_parameter('min_area_fraction', MIN_AREA_FRACTION)
 
         # Subscribers
         self.create_subscription(CameraInfo, '/depth_camera/depth/camera_info',
@@ -214,11 +236,25 @@ class BoxPoseEstimator(Node):
                 throttle_duration_sec=3.0)
             return
 
-        kept, rejected = [], []      # each entry: (base_link PointStamped, u, v, z, area)
+        kept, rejected, too_small = [], [], []
         for (cu, cv_, cz, carea) in candidates:
             cbase = do_transform_point(self._deproject(cu, cv_, cz), tf_base)
-            (kept if self._in_search_window(cbase.point) else rejected).append(
-                (cbase, cu, cv_, cz, carea))
+            entry = (cbase, cu, cv_, cz, carea)
+            if not self._in_search_window(cbase.point):
+                rejected.append(entry)
+            elif not self._is_plausible_size(carea, cz):
+                too_small.append(entry)
+            else:
+                kept.append(entry)
+
+        if too_small:
+            frac = float(self.get_parameter('min_area_fraction').value)
+            self.get_logger().warn(
+                f'{len(too_small)} blob(s) too small to be the box, rejected: ' +
+                ', '.join(f'{e[4]:.0f}px² at {e[3]:.2f} m '
+                          f'(need {self._expected_area(e[3]) * frac:.0f}px²)'
+                          for e in too_small[:3]),
+                throttle_duration_sec=2.0)
 
         if rejected:
             self.get_logger().info(
@@ -339,6 +375,28 @@ class BoxPoseEstimator(Node):
         u = p.x * self._fx / p.z + self._cx
         v = p.y * self._fy / p.z + self._cy
         return 0 <= u < self._img_w and 0 <= v < self._img_h
+
+    def _expected_area(self, depth):
+        """Pixel area a BOX_EDGE-wide object subtends at this depth."""
+        if self._fx is None or depth <= 0:
+            return 0.0
+        w = BOX_EDGE_M * self._fx / depth
+        return w * w
+
+    def _is_plausible_size(self, area, depth):
+        """Could a blob this small really be the box at this distance?
+
+        Apparent size is pure geometry, so this needs no calibration and no per-range
+        constant: it scales itself. See the note at MIN_AREA_FRACTION for the run this
+        was written from.
+        """
+        frac = float(self.get_parameter('min_area_fraction').value)
+        if frac <= 0.0:
+            return True                      # gate disabled
+        expected = self._expected_area(depth)
+        if expected <= 0.0:
+            return True                      # no intrinsics yet -- cannot judge
+        return area >= frac * expected
 
     def _in_search_window(self, p):
         """Is this base_link point inside the plausible pick volume?
