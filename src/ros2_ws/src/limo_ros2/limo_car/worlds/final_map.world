@@ -368,7 +368,7 @@
     <model name='stack_box_0'>
       <!-- z = table top 0.14 + half box height 0.02 = 0.16.
            base_link sits at world 0.145, so the box centre is at base_link z = +0.015. -->
-      <pose>-2.00 4 0.16 0 0 0</pose>
+      <pose>-2.00 4.02 0.16 0 0 0</pose>
       <link name='link'>
         <inertial>
           <mass>0.04</mass>

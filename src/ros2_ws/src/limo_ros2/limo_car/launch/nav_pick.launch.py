@@ -60,7 +60,12 @@ def load_scene(pkg):
     # place AT the centre rather than being silently clamped short of it.
     dock_range   = reach - side / 2.0        # base_link -> tag (tag is on the face)
     place_y_dock = pt['centre_map'][1] + reach   # map y where the robot stops
-    stop_dist    = reach                     # pickup dock: base_link -> box
+    # The box no longer sits at the table centre -- pickup_table.box_offset moves it
+    # toward the robot -- so the arm's target is that much closer than full reach.
+    # Previously this line read `stop_dist = reach`, which commanded every grasp at
+    # the arm's measured maximum (see the box_offset note in scene.yaml).
+    box_offset   = kt.get('box_offset', 0.0)
+    stop_dist    = reach - box_offset        # pickup dock: base_link -> box
 
     # Table top height, in base_link frame, for the arm's z target.
     # WORLD top_z - base_link_ground_z. The two tables have different world
@@ -85,11 +90,25 @@ def load_scene(pkg):
             f"  The robot would be commanded INSIDE the table.\n"
             f"  Max feasible side = {2 * (reach - bumper - clear):.3f} m.")
 
-    kt_face = kt['depth'] / 2.0
+    # Distance from base_link to the table's NEAR FACE at the dock.
+    #
+    # stop_dist is base_link -> BOX, and the box is box_offset in front of the table
+    # centre, so the centre is at stop_dist + box_offset and the near face is half a
+    # table depth in front of that. With box_offset = 0 this reduces to the original
+    # `stop_dist - depth/2`. Getting this wrong the other way would silently approve a
+    # dock that drives the chassis into the table.
+    #
+    # Note the dock itself is UNCHANGED by box_offset: the approach is box-relative,
+    # so moving the box toward the robot moves the robot's stopping point toward it by
+    # the same amount, and the bumper gap stays exactly what it was (11 mm).
+    kt_face = kt['depth'] / 2.0 - box_offset
     if stop_dist - kt_face < bumper + clear:
         raise SceneGeometryError(
-            f"pickup_table.depth = {kt['depth']:.3f} m is too large: the bumper "
-            f"would sit {bumper + clear - (stop_dist - kt_face):.3f} m inside it.")
+            f"pickup dock puts the bumper inside the table.\n"
+            f"  box at {stop_dist:.3f} m, table near face at "
+            f"{stop_dist - kt_face:.3f} m, bumper needs "
+            f"{bumper + clear:.3f} m.\n"
+            f"  Reduce pickup_table.depth or pickup_table.box_offset.")
 
     # ── Cross-check against the world file, which Gazebo actually loads ──────
     # scene.yaml cannot drive Gazebo, so the two must be kept in step by hand.
@@ -138,7 +157,21 @@ def generate_launch_description():
     # table. Pad the ACTUAL commanded stop distance by 1 cm without touching the
     # scene-derived value load_scene() validates -- the box lands ~1 cm off dead
     # centre (toward the robot) instead, well within the 8x8 cm table for a 4x4 cm box.
-    PLACE_DOCK_EXTRA_CLEARANCE = 0.01
+    # 0.0 since 2026-08-25 (was 0.01). scene.yaml derives dock_range = arm_reach -
+    # side/2 = 0.200 m precisely so the arm can reach the table CENTRE; the 10 mm pad
+    # pushed the commanded dock to 0.210, which puts the drop point BEYOND arm_reach
+    # and violates the constraint scene.yaml validates against. reach_map.csv shows
+    # that at place height (z = -0.025) and the observed lateral offset, essentially
+    # one column (x = 0.22) is reachable -- so the padded target sat outside the
+    # measured workspace, and the place retract had no near IK branch to return
+    # (measured 2026-08-25: all 3 samples came back 2.189 rad from the arm's actual
+    # configuration, the move was refused, and the Cartesian fallback built a
+    # 246-waypoint 41.5 rad path).
+    #
+    # The bumper clearance the pad was protecting is restored by biasing the DROP
+    # POINT inward instead (see PLACE_NEAR_EDGE_BIAS in the orchestrator), which
+    # moves the arm's target without moving the chassis closer to the table.
+    PLACE_DOCK_EXTRA_CLEARANCE = 0.0
     dock_range_padded = derived['dock_range'] + PLACE_DOCK_EXTRA_CLEARANCE
 
     spawn_y = LaunchConfiguration('spawn_y', default='7.0')

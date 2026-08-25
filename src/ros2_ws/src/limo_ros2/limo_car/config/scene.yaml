@@ -89,6 +89,23 @@ place_table:
 # enters the camera's 45.6 deg vertical FOV at dock range -- with a 0.10 m table
 # the box sat below the bottom edge of the image and could not be seen at all.
 pickup_table:
+  # Box offset toward the robot from the table centre, along the approach axis.
+  #
+  # WHY THIS EXISTS. The box used to spawn at the table centre, which the chassis
+  # can never approach closer than bumper_x + bumper_clearance + depth/2 = 0.239 m.
+  # The launch file then set the arm's target to arm_reach (0.240 m) -- i.e. the
+  # grasp was commanded at the arm's maximum measured forward reach, every time.
+  # reach_map.csv shows no top-down pose beyond x = 0.240 is reachable at grasp
+  # height, and only x = 0.22 and 0.24 are reachable there at all: a band two sweep
+  # cells wide, with the target on its outer edge.
+  #
+  # Moving the box 20 mm toward the robot puts the grasp at x = 0.219 -- mid-band,
+  # ~10 mm from the inner edge and ~30 mm from the outer. The dock itself does not
+  # move: the chassis still stops 0.239 m from the table centre with the same
+  # bumper clearance, because the approach is box-relative. Only the arm's target
+  # changes. The box also stays fully on the table (0.08 m deep, 0.04 m box, so
+  # 0.02 m of offset leaves the near face 0.02 m inside the edge).
+  box_offset:  0.02
   centre_map: [-2.0, 4.0]
   depth:       0.08            # along the approach axis (y) -- keeps the bumper clear
   width:       0.30            # across it (x)

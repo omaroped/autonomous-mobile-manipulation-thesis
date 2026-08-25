@@ -287,6 +287,10 @@ ACC_SCALE     =  0.2
 # of abandoning the goal. Diagnosed 2026-08-12 after this exact bug (already fixed
 # in real_grasp_test.py the night before) recurred here.
 EXEC_TIMEOUT_SEC = 90.0
+# Per-trajectory-point allowance used to scale the execution timeout (see
+# _exec_timeout). The retimed pace is ~0.5 s/point at VEL_SCALE 0.2; 0.75 leaves
+# headroom without letting a genuinely stuck move hang forever.
+EXEC_SEC_PER_POINT = 0.75
 
 # ── Cartesian (straight-line) motion ─────────────────────────────────────────
 # go_pose() plans in JOINT space via OMPL/RRTConnect, which optimises for path
@@ -308,6 +312,10 @@ CART_MAX_STEP     = 0.002   # interpolation step (m). 2 mm over a 60 mm move = 3
 # 5 mm: total joint path 3.240 rad for a 0.060 m lift (54 rad/m, against ~5-8 rad/m for
 # a clean descend) with a 0.1404 rad single-step outlier against a 0.0546 median.
 CART_MIN_FRACTION = 0.90    # accept the path only if the interpolator covered >= 90%
+# Max joint travel per metre of Cartesian motion before a "straight-line" path is
+# rejected as a zigzag. A clean single-branch descent on this arm measures ~5 rad/m;
+# the pathological paths measured 170-403. See the gate in go_pose_straight().
+CART_JOINT_TRAVEL_MAX = 15.0
 MOVEIT_SUCCESS = 1
 
 # ── Base pin ──────────────────────────────────────────────────────────────────
@@ -413,7 +421,10 @@ class NavPickOrchestrator(Node):
         self.declare_parameter('box_name', 'stack_box_0')
         # z = pickup table top 0.14 + half box height 0.02 = 0.16 (table raised 2026-08-02
         # so the box enters the camera's vertical field of view at grasp range).
-        self.declare_parameter('box_reset_xyz', [-2.0, 4.0, 0.16])
+        # Must match the box's spawn pose in worlds/final_map.world. Moved to y=4.02
+        # on 2026-08-25 (pickup_table.box_offset = 0.02): 20 mm toward the robot, so
+        # the grasp sits mid-band instead of at the arm's maximum reach.
+        self.declare_parameter('box_reset_xyz', [-2.0, 4.02, 0.16])
 
         # ── Stacking knobs (live, tune with `ros2 param set` — NO relaunch) ──────
         # Straight-line approach/retreat either side of a grasp or a place.
@@ -494,6 +505,19 @@ class NavPickOrchestrator(Node):
             f'stop_distance={self._stop_distance:.3f} '
             f'place_surface_base_z={self._place_surface_base_z:+.4f}')
         self.declare_parameter('place_stack_levels', 1)                 # boxes to stack at place table
+        # How far to pull the place drop point toward the robot, from the tag-derived
+        # table centre. Live-tunable so it can be matched to the measured band without
+        # a rebuild:  ros2 param set /nav_pick_orchestrator place_near_edge_bias 0.04
+        #
+        # 0.03 since 2026-08-25. The place DESCENT pose sits at base_link z = -0.025
+        # (place surface -0.045 + half box), near the bottom of the workspace, where
+        # reach_map.csv shows only TWO reachable columns at y=0: x = 0.22 and x = 0.24.
+        # A 0.02 bias landed the target at 0.233 -- between them -- and IK came back
+        # 1.766 rad from the arm's pose, was refused, and the Cartesian fallback built
+        # a 90-waypoint 13.8 rad path. 0.03 puts the target at ~0.223, on the 0.22
+        # column. Contrast the RETRACT pose at z = +0.075, which has five reachable
+        # columns and worked at 0.54 rad on the same run.
+        self.declare_parameter('place_near_edge_bias', 0.03)
         self.declare_parameter('place_yaw_offset', 0.0)                 # calibration offset for arm yaw
 
         # Tag-based place dock (tag_dock_estimator topics)
@@ -1167,7 +1191,7 @@ class NavPickOrchestrator(Node):
         STOP_MARGIN = 0.005
         drive = max(0.0, drive - STOP_MARGIN)
         if drive <= 0.001:
-            return
+            return 0.0
         for _ in range(20):
             rclpy.spin_once(self, timeout_sec=0.05)
             if self._odom is not None:
@@ -1195,6 +1219,12 @@ class NavPickOrchestrator(Node):
 
         self._cmd_vel_pub.publish(Twist())
         time.sleep(0.5)
+        # Return what was ACTUALLY driven, not what was asked for. The two differ by
+        # STOP_MARGIN, by any timeout, and by odometry error. The caller uses this to
+        # aim the arm at where the box now is, instead of assuming it reached the
+        # commanded stop distance -- see the grasp-target derivation in visual_docking().
+        final = self._odom_dist_since(ox, oy)
+        return 0.0 if final is None else float(final)
 
     def visual_docking(self):
         """MECHANISM 1 — land, align, then approach (differential drive).
@@ -1320,7 +1350,28 @@ class NavPickOrchestrator(Node):
         self.get_logger().info(
             f'Phase B stage 3: driving the last {stage2:.3f} m blind to '
             f'{self._stop_distance:.2f} m (the arm reach limit)')
-        self._drive_forward(stage2, FINAL_READ_DIST)
+        driven = self._drive_forward(stage2, FINAL_READ_DIST)
+
+        # F3: aim at where the box ACTUALLY is, not where the dock was told to stop.
+        #
+        # _dock_box's x was previously hard-set to self._stop_distance, i.e. the code
+        # ASSUMED the blind hop landed exactly on its commanded distance. It does not:
+        # _drive_forward subtracts STOP_MARGIN (5 mm) from every commanded drive, and
+        # odometry adds its own error on top. Ground-truth pin poses across runs put
+        # the box at 0.229-0.239 m while the arm was aimed at a fixed 0.240 -- so the
+        # target was wrong by up to ~11 mm, in a workspace band only ~40 mm wide, and
+        # wrong in a DIFFERENT direction each run. That is enough on its own to explain
+        # grasps landing 13-21 mm off-centre along the finger faces.
+        #
+        # Using the measured travel makes the aim track the dock instead of assuming
+        # it, which also makes STOP_MARGIN harmless rather than a systematic bias.
+        measured_x = FINAL_READ_DIST - driven
+        if self._dock_box is not None:
+            self.get_logger().info(
+                f'grasp x from measured dock: {measured_x:.4f} m '
+                f'(drove {driven:.4f} of {stage2:.4f} commanded; '
+                f'assumed value would have been {self._stop_distance:.4f})')
+            self._dock_box = (measured_x, self._dock_box[1], self._dock_box[2])
 
         # ── Lateral re-fix AFTER the drive (added 2026-07-28) ─────────────────
         # WHY: _dock_box was frozen BEFORE this drive, so its y came from a
@@ -1835,6 +1886,25 @@ class NavPickOrchestrator(Node):
             pt.accelerations = [a / (k * k) for a in pt.accelerations]
         return traj
 
+    @staticmethod
+    def _exec_timeout(traj):
+        """Execution timeout scaled to the trajectory's own length.
+
+        A FIXED 90 s was cancelling legitimate moves mid-flight. Measured 2026-08-25:
+        a 273-point retract, retimed to ~0.5 s per point, needs ~136 s of motion; the
+        timeout fired at 90 s and cancelled it halfway, which then cascaded into a
+        rejected retry (the controller was still settling the cancelled goal), two
+        failed fallback plans, and a failed homing move. That whole sequence is what
+        an observer sees as the arm "moving up and down weirdly" after a place.
+
+        Scaling with the point count means a long path is allowed to finish, while a
+        pathological one is caught BEFORE execution by the rad/m gate in
+        go_pose_straight() rather than by a timeout during it.
+        """
+        pts = getattr(getattr(traj, 'joint_trajectory', None), 'points', None)
+        n = len(pts) if pts else 0
+        return max(EXEC_TIMEOUT_SEC, 2.0 + EXEC_SEC_PER_POINT * n)
+
     def solve_ik_seeded(self, x, y, z, q, label, timeout=1.0, quiet=False):
         """One IK solve at (x, y, z, q), SEEDED from the arm's actual configuration.
 
@@ -2069,14 +2139,53 @@ class NavPickOrchestrator(Node):
             # reseeded and returned a different arm configuration for essentially the
             # same pose. Individually valid, so `fraction` never notices -- but the
             # controller splines through it in joint space and the tool swings.
+            # Cartesian length of this segment, measured from the arm's ACTUAL current
+            # TCP via TF rather than assumed, so the ratio below is honest even when a
+            # previous move ended somewhere unexpected.
+            seg_len = None
+            try:
+                tf_now = self._tf_buf.lookup_transform(
+                    PLANNING_FRAME, TCP_LINK, rclpy.time.Time())
+                t = tf_now.transform.translation
+                seg_len = math.dist((t.x, t.y, t.z), (x, y, z))
+            except Exception:
+                pass
+
+            ratio = (jpath / seg_len) if (seg_len and seg_len > 1e-4) else float('nan')
             self.get_logger().info(
                 f'[{label}] path diag: {len(pts)} waypoints, total joint path '
                 f'{jpath:.3f} rad, largest single step {worst:.4f} rad '
-                f'(median {sorted(steps)[len(steps)//2]:.4f})')
-            if worst > 0.15:
-                self.get_logger().warn(
-                    f'[{label}] DISCONTINUITY: one waypoint jumps {worst:.3f} rad — '
-                    f'this is an IK branch flip, not a straight-line motion')
+                f'(median {sorted(steps)[len(steps)//2]:.4f})'
+                + (f', {ratio:.0f} rad/m over {seg_len*1000:.0f} mm'
+                   if ratio == ratio else ''))
+
+            # GATE (2026-08-25). This replaces a `worst > 0.15` warning that could
+            # never fire. The Cartesian service time-parameterizes its response at full
+            # speed, resampling onto a fixed 0.1 s grid, so EVERY returned path -- clean
+            # or pathological -- has its per-step joint motion capped at
+            # max_velocity * resample_dt = 1.5 rad/s * 0.1 s = 0.15 rad. That the
+            # observed maxima (0.110-0.150) sat just under the configured
+            # revolute_jump_threshold was a numerical coincidence, not the threshold
+            # doing work. A per-step check therefore cannot distinguish a straight line
+            # from a zigzag, by construction.
+            #
+            # Joint travel per metre of Cartesian motion CAN: resampling redistributes
+            # points along a path, it cannot add joint travel. Measured on this arm, a
+            # clean single-branch 45 mm descent costs ~0.2 rad of max-joint change,
+            # while the pathological "straight" paths logged 170-403 rad/m. 15 rad/m is
+            # roughly 3x the clean cost -- comfortably above anything legitimate and far
+            # below anything broken.
+            #
+            # With the task points inside the reachable band this should never fire.
+            # Its job is to make a recurrence LOUD and non-executable rather than
+            # silently played back under a "STRAIGHT OK (100% interpolated)" message.
+            if ratio == ratio and ratio > CART_JOINT_TRAVEL_MAX:
+                self.get_logger().error(
+                    f'[{label}] REJECTED: {ratio:.0f} rad/m of joint travel over '
+                    f'{seg_len*1000:.0f} mm — that is not a straight line '
+                    f'(limit {CART_JOINT_TRAVEL_MAX:.0f} rad/m). Falling back to a '
+                    f'joint-space plan rather than executing it.')
+                return self.go_pose(x, y, z, q, label)
 
         if frac < min_fraction:
             self.get_logger().warn(
@@ -2102,7 +2211,7 @@ class NavPickOrchestrator(Node):
             return self.go_pose(x, y, z, q, label)
 
         res_fut = gh.get_result_async()
-        rclpy.spin_until_future_complete(self, res_fut, timeout_sec=EXEC_TIMEOUT_SEC)
+        rclpy.spin_until_future_complete(self, res_fut, timeout_sec=self._exec_timeout(goal.trajectory))
         if not res_fut.done():
             self.get_logger().error(
                 f'[{label}] straight-line move did not finish in '
@@ -2829,7 +2938,39 @@ class NavPickOrchestrator(Node):
             return False
 
         yaw_offset = float(self.get_parameter('place_yaw_offset').value)
-        self._latched_drop    = (float(drop.point.x), float(drop.point.y))
+
+        # F2 (2026-08-25): bias the drop toward the robot and clamp its lateral offset.
+        #
+        # The tag-derived drop point aims at the place table's CENTRE, which sits at
+        # the far end of the arm's reach -- and Phase B's lateral centring times out
+        # regularly, so the latched y has been observed as large as +0.048 m. Against
+        # reach_map.csv at place height (z = -0.025) that combination is outside the
+        # measured workspace: no near IK branch exists, the move is refused, and the
+        # Cartesian fallback builds a multi-thousand-degree zigzag. That is the
+        # "arm struggles to lift after placing" motion.
+        #
+        # Biasing x inward by 20 mm puts the drop inside the reachable column while
+        # still landing well within an 80 mm table (the box is 40 mm, so a 20 mm
+        # inward bias leaves 20 mm of table beyond the box's near face).
+        #
+        # The y clamp is deliberately a CLAMP, not a rejection: a large lateral offset
+        # means the dock was poor, and placing 20 mm off-centre on the table beats
+        # aiming at a pose the arm cannot reach. It is logged loudly when it bites.
+        PLACE_NEAR_EDGE_BIAS = float(self.get_parameter('place_near_edge_bias').value)
+        PLACE_MAX_LATERAL    = 0.02   # m, |y| cap on the latched drop
+        raw_x, raw_y = float(drop.point.x), float(drop.point.y)
+        clamped_y = max(-PLACE_MAX_LATERAL, min(PLACE_MAX_LATERAL, raw_y))
+        if abs(raw_y - clamped_y) > 1e-6:
+            self.get_logger().warn(
+                f'Phase D: lateral drop offset {raw_y:+.3f} m exceeds '
+                f'±{PLACE_MAX_LATERAL:.3f} m — clamped to {clamped_y:+.3f}. The dock '
+                f'is off the table centre line (Phase B centring likely timed out); '
+                f'the box will land off-centre but within reach.')
+        self._latched_drop    = (raw_x - PLACE_NEAR_EDGE_BIAS, clamped_y)
+        self.get_logger().info(
+            f'Phase D drop biased {PLACE_NEAR_EDGE_BIAS*1000:.0f} mm inward: '
+            f'({raw_x:.3f}, {raw_y:+.3f}) -> '
+            f'({self._latched_drop[0]:.3f}, {self._latched_drop[1]:+.3f})')
         self._latched_tag_yaw = t[4] + yaw_offset    # tag yaw + calibration offset
         self.get_logger().info(
             f'Phase D latched: drop=({self._latched_drop[0]:.3f},{self._latched_drop[1]:.3f}) '
