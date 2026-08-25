@@ -3342,10 +3342,17 @@ class NavPickOrchestrator(Node):
         # ── FULL PIPELINE: pick → transport → dock → place (multi-level) ────────
         place_levels = max(1, int(self.get_parameter('place_stack_levels').value))
 
-        # Single-box testing for now — stack_box_1/2 removed from final_map.world.
-        # Revert to ['stack_box_0', 'stack_box_1', 'stack_box_2'] once one-box
-        # grasping is reliable and multi-box stacking is re-enabled.
-        self._remaining_boxes = ['stack_box_0']
+        # All three boxes are back in final_map.world as of 2026-08-25 (single-box
+        # grasping is now reliable: three consecutive runs with clean single-branch
+        # IK and no Cartesian fallback).
+        #
+        # Order here is NOT the pick order. _claim_held_box() identifies which box is
+        # actually held by GROUND TRUTH -- whichever one is elevated and nearest the
+        # gripper -- so this list only has to name every box that exists. The pick
+        # order is decided by box_pose_estimator's target_policy ('rightmost' for
+        # multi-box, set in nav_pick.launch.py), which is deterministic: as boxes are
+        # consumed the remaining ones present a new rightmost each cycle.
+        self._remaining_boxes = ['stack_box_0', 'stack_box_1', 'stack_box_2']
 
         # Level 0: first pick (robot is already docked at pickup table)
         self._cycle_begin(0)

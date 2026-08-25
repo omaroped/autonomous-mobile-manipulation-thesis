@@ -56,7 +56,15 @@ class ReachSweep(Node):
         # camera needs — so we can see whether reach and vision overlap at all.
         xs = [round(0.14 + i * 0.02, 2) for i in range(17)]  # 0.14 .. 0.46
         ys = [round(-0.08 + i * 0.04, 2) for i in range(5)]  # -0.08 .. 0.08
-        zs = [round(-0.06 + i * 0.02, 2) for i in range(9)]  # -0.06 .. 0.10 (box centre -0.021)
+        # z extended to +0.20 on 2026-08-25 for STACKING. The original sweep stopped
+        # at +0.10, but a 3-level stack puts the arm far above that:
+        #   level 0 hover +0.075 (swept)   level 1 hover +0.115   level 2 hover +0.155
+        # Both upper hovers were outside the characterized set, so stacking above
+        # level 0 was being attempted with no reachability evidence at all. The
+        # existing data also shows the band starting to CLOSE at the top -- the outer
+        # edge pulls in from 0.24 to 0.22 between z = +0.08 and +0.10 -- so the upper
+        # hovers may well be unreachable. This sweep settles it.
+        zs = [round(-0.06 + i * 0.02, 2) for i in range(14)]  # -0.06 .. 0.20
         
         # Orientations
         orientations = [

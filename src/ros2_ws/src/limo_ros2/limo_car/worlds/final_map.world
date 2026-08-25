@@ -408,6 +408,108 @@
       </link>
     </model>
 
+    <!-- ── stack_box_1 / stack_box_2 ──────────────────────────────────────
+         Added 2026-08-25 for three-box stacking. Identical geometry, mass and
+         contact parameters to stack_box_0, and the SAME blue material: the HSV
+         detector must see all three as the same object class, so any colour
+         difference would silently change which boxes are detectable.
+
+         Layout across the pickup table (0.30 m wide, spans map x [-2.15, -1.85]):
+           stack_box_1  x = -2.10     stack_box_0  x = -2.00     stack_box_2  x = -1.90
+         Box 0 keeps the exact position verified over three runs on 2026-08-25;
+         the new boxes are additive, 0.065 m clear of their neighbours and 0.032 m
+         inside the table edges. All three sit at y = 4.02, i.e. the same
+         pickup_table.box_offset the geometry fix established.
+
+         They do NOT all need to be reachable at once: the stacking loop navigates
+         back to the pickup table and re-docks for every box, so each one is
+         centred and grasped from a fresh dock. -->
+    <model name='stack_box_1'>
+      <!-- z = table top 0.14 + half box height 0.02 = 0.16.
+           base_link sits at world 0.145, so the box centre is at base_link z = +0.015. -->
+      <pose>-2.10 4.02 0.16 0 0 0</pose>
+      <link name='link'>
+        <inertial>
+          <mass>0.04</mass>
+          <inertia>
+            <ixx>9.42e-6</ixx><ixy>0</ixy><ixz>0</ixz>
+            <iyy>9.42e-6</iyy><iyz>0</iyz>
+            <izz>8.17e-6</izz>
+          </inertia>
+        </inertial>
+        <collision name='col'>
+          <!-- PRIMITIVE, exactly as in the last known-working commit 08e8af4.
+               Contact params below are byte-identical to that version, so the
+               collision SHAPE is the only remaining difference. -->
+          <geometry><box><size>0.035 0.035 0.04</size></box></geometry>
+          <surface>
+            <friction>
+              <ode><mu>1.0</mu><mu2>1.0</mu2></ode>
+            </friction>
+            <contact>
+              <ode>
+                <kp>1e6</kp>
+                <kd>1.0</kd>
+                <max_vel>0.01</max_vel>
+                <min_depth>0.001</min_depth>
+              </ode>
+            </contact>
+          </surface>
+        </collision>
+        <visual name='vis'>
+          <geometry><mesh><uri>model://limo_car/meshes/stack_box.stl</uri><scale>1 1 1</scale></mesh></geometry>
+          <material>
+            <ambient>0 0 1 1</ambient>
+            <diffuse>0 0.2 1 1</diffuse>
+          </material>
+        </visual>
+        <self_collide>0</self_collide>
+      </link>
+    </model>
+
+    <model name='stack_box_2'>
+      <!-- z = table top 0.14 + half box height 0.02 = 0.16.
+           base_link sits at world 0.145, so the box centre is at base_link z = +0.015. -->
+      <pose>-1.90 4.02 0.16 0 0 0</pose>
+      <link name='link'>
+        <inertial>
+          <mass>0.04</mass>
+          <inertia>
+            <ixx>9.42e-6</ixx><ixy>0</ixy><ixz>0</ixz>
+            <iyy>9.42e-6</iyy><iyz>0</iyz>
+            <izz>8.17e-6</izz>
+          </inertia>
+        </inertial>
+        <collision name='col'>
+          <!-- PRIMITIVE, exactly as in the last known-working commit 08e8af4.
+               Contact params below are byte-identical to that version, so the
+               collision SHAPE is the only remaining difference. -->
+          <geometry><box><size>0.035 0.035 0.04</size></box></geometry>
+          <surface>
+            <friction>
+              <ode><mu>1.0</mu><mu2>1.0</mu2></ode>
+            </friction>
+            <contact>
+              <ode>
+                <kp>1e6</kp>
+                <kd>1.0</kd>
+                <max_vel>0.01</max_vel>
+                <min_depth>0.001</min_depth>
+              </ode>
+            </contact>
+          </surface>
+        </collision>
+        <visual name='vis'>
+          <geometry><mesh><uri>model://limo_car/meshes/stack_box.stl</uri><scale>1 1 1</scale></mesh></geometry>
+          <material>
+            <ambient>0 0 1 1</ambient>
+            <diffuse>0 0.2 1 1</diffuse>
+          </material>
+        </visual>
+        <self_collide>0</self_collide>
+      </link>
+    </model>
+
     <!-- stack_box_1 and stack_box_2 removed — single-box testing for now. Re-add
          them (and revert _remaining_boxes in nav_pick_orchestrator.py) once
          one-box grasping is reliable. -->

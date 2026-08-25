@@ -185,6 +185,9 @@ def generate_launch_description():
     # with the scene -- it can no longer be a stale literal.
     dock_range = LaunchConfiguration('dock_range', default=str(dock_range_padded))
     metrics_csv = LaunchConfiguration('metrics_csv', default='')
+    # Which box to grasp when several are visible: 'rightmost' (deterministic,
+    # correct for multi-box stacking) or 'nearest' (the old single-box default).
+    target_policy = LaunchConfiguration('target_policy', default='rightmost')
     use_physics_grasp = LaunchConfiguration('use_physics_grasp', default='true')
     base_pin_enabled = LaunchConfiguration('base_pin_enabled', default='true')
 
@@ -210,6 +213,11 @@ def generate_launch_description():
         description='0 = run once (normal demo). N>0 = calibration mode: after docking, '
                     'repeat the grasp N times, auto-resetting the box, reading grasp_off_* '
                     'params live each iteration so the offset can be tuned without relaunching.')
+
+    target_policy_arg = DeclareLaunchArgument(
+        'target_policy', default_value='rightmost',
+        description="Which box to grasp when several are visible: 'rightmost' "
+                    "(deterministic, for multi-box stacking) or 'nearest'.")
 
     place_stack_levels_arg = DeclareLaunchArgument(
         'place_stack_levels', default_value='1',
@@ -304,7 +312,18 @@ def generate_launch_description():
             executable='box_pose_estimator',
             name='box_pose_estimator',
             output='screen',
-            parameters=[{'use_sim_time': True}])])
+            parameters=[{
+                'use_sim_time': True,
+                # 'rightmost' since 2026-08-25, when stack_box_1/2 returned to the
+                # world. With three identical boxes at the SAME distance from the
+                # robot, the default 'nearest' policy picks by depth -- which is
+                # ambiguous between them and flips on perception noise, so the robot
+                # could re-target mid-approach. 'rightmost' orders them
+                # deterministically by base_link y, and because each pick removes a
+                # box, the remaining ones present a new rightmost every cycle with no
+                # counter to keep in sync.
+                'target_policy': target_policy,
+            }])])
 
     # ── 4b. tag_dock_estimator — delay 15 s (parallel with box_estimator) ────
     # Detects AprilTag 36h11 on the place table, publishes /place_tag_pose and
@@ -412,6 +431,7 @@ def generate_launch_description():
         use_gzclient_arg,
         drive_mode_arg,
         calib_loops_arg,
+        target_policy_arg,
         place_stack_levels_arg,
         dock_range_arg,
         metrics_csv_arg,

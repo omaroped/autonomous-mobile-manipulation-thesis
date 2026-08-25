@@ -38,6 +38,11 @@ install(PROGRAMS scripts/arm_grasp_test.py
   RENAME arm_grasp_test DESTINATION lib/${PROJECT_NAME})
 install(PROGRAMS scripts/base_pin.py
   RENAME base_pin DESTINATION lib/${PROJECT_NAME})
+# base_drift_probe.py — measures how far the base ACTUALLY moves (Gazebo ground
+# truth) vs how far odometry thinks it moved. Used to quantify what base_pin's
+# 50 Hz teleport-hold is hiding, by running the pipeline with and without it.
+install(PROGRAMS scripts/base_drift_probe.py
+  RENAME base_drift_probe DESTINATION lib/${PROJECT_NAME})
 install(PROGRAMS scripts/grasp_attacher.py
   RENAME grasp_attacher DESTINATION lib/${PROJECT_NAME})
 install(PROGRAMS scripts/reach_sweep.py
