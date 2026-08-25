@@ -148,6 +148,39 @@ class GazeboGraspFix : public ModelPlugin {
 
     // ---- if not holding, try to attach ----
     if (!held_obj_link_) {
+      // GATE ADDED 2026-08-19: only attach while the gripper is actually CLOSING.
+      //
+      // Contact alone is not a grasp. The approach descends with the fingers OPEN,
+      // and they brush the box on the way in -- enough contacts to pass
+      // grasp_count_threshold_ and weld. The release side then immediately sees the
+      // very same open gripper (gpos > release_position_) and unwelds, contacts are
+      // still present so it re-welds, and the plugin oscillates GRASP ON/OFF
+      // indefinitely: hundreds of cycles in a single approach, observed in the
+      // 2026-08-19 run log.
+      //
+      // Each cycle creates and destroys a real fixed joint between the palm and a
+      // 0.04 kg box, so each one is a physics discontinuity that kicks the arm. That
+      // is the joint-2/joint-3 oscillation and the end-effector moving forward and
+      // back while the gripper is still above the box -- it starts BEFORE the pick
+      // precisely because open fingers touching is all it needs.
+      //
+      // The two sides must agree on what "gripping" means. Release fires when
+      // gpos > release_position_; attach must therefore be forbidden in that same
+      // region, otherwise the two conditions are simultaneously true and fight.
+      // The earlier release debounce (grasp_count_threshold_ sustained ticks) only
+      // lengthened each cycle -- it treated the symptom, not this contradiction.
+      double gpos_attach = 0.0;
+      physics::JointPtr gj_attach = model_->GetJoint(gripper_joint_name_);
+      if (gj_attach) gpos_attach = gj_attach->Position(0);
+      if (gpos_attach > release_position_) {
+        // Gripper is open. Whatever the fingers are touching, it is not a grasp.
+        // Clear the counters so contacts made while open cannot accumulate and
+        // fire the instant the gripper starts to close.
+        grip_count_.clear();
+        release_count_.clear();
+        return;
+      }
+
       // pick the object with the strongest sustained grip
       std::string best_obj;
       int best_count = 0;

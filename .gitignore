@@ -187,3 +187,6 @@ src/ros2_ws/fix_fonts.py
 src/ros2_ws/restore_diagram.py
 src/ros2_ws/revert_diagram.py
 src/ros2_ws/fonts/
+
+# graphify knowledge-graph output (regenerate with: graphify <path> --code-only)
+graphify-out/

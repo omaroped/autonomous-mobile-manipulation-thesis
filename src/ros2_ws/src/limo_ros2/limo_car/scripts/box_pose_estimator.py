@@ -47,6 +47,43 @@ BLUE_HSV_HI = np.array([130, 255, 255])
 MIN_CONTOUR_AREA = 30          # px², ignore noise
 TARGET_FRAME     = 'base_link'  # MoveIt arm-planning frame
 
+# ── Depth validity band ──────────────────────────────────────────────────────
+# The camera cannot measure outside its own clip planes (gazebo/sensor.xacro:
+# <near>0.15</near>, <far>3.0</far>), but the Gazebo plugin is configured
+# <min_depth>0.001</min_depth> / <max_depth>300.0</max_depth>, so it publishes
+# values well outside that range anyway. The old filter here was `d > 0.05`,
+# which accepted the whole [0.05, 0.15) band of sub-near-clip garbage.
+#
+# That is not hypothetical. The 2026-08-14 abort targeted base_link
+# (0.154, -0.291, -0.003); working the camera mount transform backwards
+# (base_link -> depth_camera_link is 0.1 0 0.065, depth_link adds only the
+# optical rotation) that point implies a depth of 0.054 m -- inside exactly the
+# band this filter used to let through.
+DEPTH_MIN_DEFAULT = 0.15   # = sensor.xacro <near>. Real Orbbec DaBai is 0.30 --
+DEPTH_MAX_DEFAULT = 3.0    #   override via the depth_min parameter on hardware.
+
+# ── Search window (base_link, metres) ────────────────────────────────────────
+# The plausible volume for a box the robot is about to pick. Everything outside
+# is rejected before it can ever become a grasp target.
+#
+# Height is derived from config/scene.yaml, not guessed:
+#     pickup_table.top_z (0.14) + box.size/2 (0.02) - robot.base_link_ground_z (0.145)
+#   = +0.015 m for the box centre in base_link.
+# The band below is deliberately much wider than that -- it is a sanity gate
+# against floor/ceiling artifacts, not a tight fit that would reject the real
+# box when the table height changes.
+#
+# X spans the whole approach: the box is first sighted around 0.9 m and the dock
+# ends at STOP_DISTANCE = 0.24 m, so the window must stay valid through every
+# phase. It is NOT tightened after docking -- a phase-dependent window would
+# need the estimator to track orchestrator state, and the depth band already
+# does the decisive work.
+SEARCH_X_MIN_DEFAULT = 0.15    # = near clip; nothing closer is measurable
+SEARCH_X_MAX_DEFAULT = 1.60    # beyond the ~0.92 m first sighting, with margin
+SEARCH_Y_ABS_DEFAULT = 0.60    # ~the FOV half-width at max range (0.92·tan34°)
+SEARCH_Z_MIN_DEFAULT = -0.10   # 0.115 m below the expected box centre
+SEARCH_Z_MAX_DEFAULT = 0.20    # 0.185 m above it
+
 
 class BoxPoseEstimator(Node):
 
@@ -57,6 +94,7 @@ class BoxPoseEstimator(Node):
         self._depth = None          # latest depth image (np.float32)
         self._fx = self._fy = None  # intrinsics
         self._cx = self._cy = None
+        self._img_w = self._img_h = None
         self._depth_frame = None    # optical frame id from the depth image header
 
         # TF2
@@ -67,7 +105,25 @@ class BoxPoseEstimator(Node):
         # relaunch needed: `ros2 param set /box_pose_estimator target_policy rightmost`
         #   'nearest'   — closest box by camera depth (original behaviour, default)
         #   'rightmost' — deterministic rightmost-first ordering in base_link
+        #   'largest'   — biggest contour. Structurally robust against specks:
+        #                 MIN_CONTOUR_AREA is only 30 px², so a 6x6 speck counts as
+        #                 a "box" and under 'nearest' outranks the real box purely by
+        #                 sampling a nearer depth. Not the default — the search window
+        #                 below already rejects the implausible ones — but available.
         self.declare_parameter('target_policy', 'nearest')
+
+        # ── Search window ────────────────────────────────────────────────────
+        # All live-tunable, so the window can be widened/narrowed against a running
+        # sim without a rebuild:
+        #   ros2 param set /box_pose_estimator search_y_abs 0.30
+        self.declare_parameter('search_enabled', True)
+        self.declare_parameter('search_x_min', SEARCH_X_MIN_DEFAULT)
+        self.declare_parameter('search_x_max', SEARCH_X_MAX_DEFAULT)
+        self.declare_parameter('search_y_abs', SEARCH_Y_ABS_DEFAULT)
+        self.declare_parameter('search_z_min', SEARCH_Z_MIN_DEFAULT)
+        self.declare_parameter('search_z_max', SEARCH_Z_MAX_DEFAULT)
+        self.declare_parameter('depth_min', DEPTH_MIN_DEFAULT)
+        self.declare_parameter('depth_max', DEPTH_MAX_DEFAULT)
 
         # Subscribers
         self.create_subscription(CameraInfo, '/depth_camera/depth/camera_info',
@@ -100,6 +156,7 @@ class BoxPoseEstimator(Node):
         # K = [fx 0 cx; 0 fy cy; 0 0 1]
         self._fx, self._fy = msg.k[0], msg.k[4]
         self._cx, self._cy = msg.k[2], msg.k[5]
+        self._img_w, self._img_h = msg.width, msg.height
 
     def _depth_cb(self, msg: Image):
         try:
@@ -134,100 +191,96 @@ class BoxPoseEstimator(Node):
             self.get_logger().info('No blue box visible.', throttle_duration_sec=3.0)
             return
 
-        # Multiple boxes may be visible at once (the 3-box stacking pickup table).
-        # target_policy selects how to pick among them — see the param declaration above.
-        policy = self.get_parameter('target_policy').value
+        # ── Search window ────────────────────────────────────────────────────
+        # Deproject EVERY candidate into base_link FIRST, then discard the ones
+        # outside the plausible pick volume, and only then apply target_policy to
+        # whatever survives.
+        #
+        # Order matters, and this is the whole point of the change: previously the
+        # policy ran over every blob, so an implausible one could win the comparison
+        # and become the grasp target. On 2026-08-14 exactly that happened -- the
+        # detector logged "2 boxes visible — targeting nearest (z=0.166)" and the
+        # nearer of the two was an artifact, giving a target 0.29 m off-axis that no
+        # IK solution exists for. Filtering before selecting makes that class of
+        # failure unreachable rather than merely unlikely.
+        try:
+            tf_base = self.tf_buffer.lookup_transform(
+                TARGET_FRAME, self._depth_frame,
+                rclpy.time.Time(), timeout=Duration(seconds=0.2))
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
+                tf2_ros.ExtrapolationException) as e:
+            self.get_logger().warn(
+                f'TF {self._depth_frame}→{TARGET_FRAME} unavailable: {e}',
+                throttle_duration_sec=3.0)
+            return
 
-        if policy == 'rightmost' and len(candidates) > 1:
+        kept, rejected = [], []      # each entry: (base_link PointStamped, u, v, z, area)
+        for (cu, cv_, cz, carea) in candidates:
+            cbase = do_transform_point(self._deproject(cu, cv_, cz), tf_base)
+            (kept if self._in_search_window(cbase.point) else rejected).append(
+                (cbase, cu, cv_, cz, carea))
+
+        if rejected:
+            self.get_logger().info(
+                f'{len(rejected)} blob(s) outside the search window, rejected: ' +
+                ', '.join(f'({r[0].point.x:.3f}, {r[0].point.y:+.3f}, {r[0].point.z:+.3f})'
+                          for r in rejected[:3]),
+                throttle_duration_sec=2.0)
+
+        if not kept:
+            self.get_logger().warn(
+                f'All {len(candidates)} blue blob(s) fell outside the search window — '
+                f'nothing published. If this is wrong, widen it live, e.g. '
+                f'`ros2 param set /box_pose_estimator search_y_abs 0.9`',
+                throttle_duration_sec=3.0)
+            self._publish_debug_image(bgr, msg.header, None, rejected)
+            return
+
+        # ── Selection among the survivors ────────────────────────────────────
+        # Multiple boxes may legitimately be visible at once (the stacking pickup
+        # table). target_policy decides between them — see the param declaration.
+        policy = self.get_parameter('target_policy').value
+        if policy == 'rightmost':
             # Deterministic rightmost-first ordering in the robot's own frame (most
             # negative base_link y). As boxes are consumed one at a time, whichever
             # remain naturally present a new "rightmost" each cycle, so no cycle-count
             # tracking is needed here.
-            try:
-                tf_select = self.tf_buffer.lookup_transform(
-                    TARGET_FRAME, self._depth_frame,
-                    rclpy.time.Time(), timeout=Duration(seconds=0.2))
-            except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
-                    tf2_ros.ExtrapolationException) as e:
-                self.get_logger().warn(
-                    f'TF {self._depth_frame}→{TARGET_FRAME} unavailable for target selection: {e}',
-                    throttle_duration_sec=3.0)
-                return
-
-            best = None  # (base_link_y, u, v, z)
-            for (cu, cv_, cz) in candidates:
-                cx = (cu - self._cx) * cz / self._fx
-                cy = (cv_ - self._cy) * cz / self._fy
-                cpt = PointStamped()
-                cpt.header.frame_id = self._depth_frame
-                cpt.header.stamp = rclpy.time.Time().to_msg()
-                cpt.point.x, cpt.point.y, cpt.point.z = float(cx), float(cy), float(cz)
-                cpt_base = do_transform_point(cpt, tf_select)
-                if best is None or cpt_base.point.y < best[0]:
-                    best = (cpt_base.point.y, cu, cv_, cz)
-            self.get_logger().info(
-                f'{len(candidates)} boxes visible — targeting rightmost (base_link y={best[0]:.3f})',
-                throttle_duration_sec=1.0)
-            _, u, v, z = best
+            best = min(kept, key=lambda s: s[0].point.y)
+        elif policy == 'largest':
+            best = max(kept, key=lambda s: s[4])
         else:
-            # 'nearest' policy (default) — closest box by camera depth, original behaviour.
-            u, v, z = min(candidates, key=lambda c: c[2])
-            if len(candidates) > 1:
-                self.get_logger().info(
-                    f'{len(candidates)} boxes visible — targeting nearest (z={z:.3f})',
-                    throttle_duration_sec=1.0)
+            best = min(kept, key=lambda s: s[3])     # 'nearest' — smallest depth
+        if len(kept) > 1:
+            self.get_logger().info(
+                f'{len(kept)} box(es) in window — targeting {policy} '
+                f'(x={best[0].point.x:.3f} y={best[0].point.y:+.3f} '
+                f'z={best[0].point.z:+.3f}, area={best[4]:.0f}px²)',
+                throttle_duration_sec=1.0)
 
-        # Deproject pixel + depth → 3D point in the camera optical frame (REP 103).
-        x = (u - self._cx) * z / self._fx
-        y = (v - self._cy) * z / self._fy
-        pt = PointStamped()
-        pt.header.frame_id = self._depth_frame
-        pt.header.stamp = rclpy.time.Time().to_msg()  # latest available transform
-        pt.point.x, pt.point.y, pt.point.z = float(x), float(y), float(z)
+        pt_base, u, v, z, _ = best
+        pt = self._deproject(u, v, z)   # optical-frame point, for the map latch below
 
-        # Primary path: transform through 'map' so the box can be latched as a
-        # stationary world point and republished dynamically as the robot moves.
-        # Fallback: when 'map' does not exist (e.g. running without Nav2 in a
-        # standalone test), transform directly to base_link.
-        map_ok = False
+        # Latch the point in 'map' so _publish_latched() can republish it as the
+        # robot moves. Only reached with an in-window detection, so the latch can no
+        # longer be poisoned by an implausible blob and then replayed at 20 Hz.
+        # When 'map' does not exist (e.g. a standalone test without Nav2) there is
+        # simply nothing to latch, and only the live detections below are published.
         try:
-            tf = self.tf_buffer.lookup_transform(
+            tf_map = self.tf_buffer.lookup_transform(
                 'map', self._depth_frame,
                 rclpy.time.Time(), timeout=Duration(seconds=0.2))
-            pt_map = do_transform_point(pt, tf)
-            self._last_pose_map = pt_map   # latch stationary world point
-            map_ok = True
+            self._last_pose_map = do_transform_point(pt, tf_map)
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
                 tf2_ros.ExtrapolationException):
-            pass   # map unavailable — use direct path below
+            self.get_logger().info(
+                'map frame unavailable — publishing live detections only, no latch',
+                throttle_duration_sec=5.0)
 
-        if map_ok:
-            # Transform latched map point → base_link for immediate publish
-            try:
-                tf_base = self.tf_buffer.lookup_transform(
-                    TARGET_FRAME, 'map',
-                    rclpy.time.Time(), timeout=Duration(seconds=0.1))
-                pt_base = do_transform_point(self._last_pose_map, tf_base)
-            except Exception as e:
-                self.get_logger().warn(
-                    f'Failed map→base_link transform: {e}', throttle_duration_sec=3.0)
-                return
-        else:
-            # Direct path: depth_frame → base_link (no latching — works without Nav2)
-            try:
-                tf_base = self.tf_buffer.lookup_transform(
-                    TARGET_FRAME, self._depth_frame,
-                    rclpy.time.Time(), timeout=Duration(seconds=0.2))
-                pt_base = do_transform_point(pt, tf_base)
-                self.get_logger().info(
-                    'map frame unavailable — using direct depth→base_link transform',
-                    throttle_duration_sec=5.0)
-            except Exception as e:
-                self.get_logger().warn(
-                    f'TF {self._depth_frame}→{TARGET_FRAME} unavailable: {e}',
-                    throttle_duration_sec=3.0)
-                return
-
+        # Publish the DIRECT depth→base_link point computed for the window test
+        # above, rather than round-tripping through map. Identical in sim (the
+        # ground-truth map→odom is identity) and strictly more accurate on hardware,
+        # where the round trip would fold AMCL's map→odom error into a measurement
+        # the arm uses at centimetre scale.
         self._last_real_detect_t = time.time()   # a genuine detection happened just now
 
         pose = PoseStamped()
@@ -237,18 +290,87 @@ class BoxPoseEstimator(Node):
         pose.pose.orientation.w = 1.0
         self.pose_pub.publish(pose)
         self._publish_marker(pose)
-        self._publish_debug_image(bgr, msg.header, u, v, pt_base.point)
+        self._publish_debug_image(bgr, msg.header, best, rejected)
 
         self.get_logger().info(
             f'box @ base_link: x={pt_base.point.x:.3f} y={pt_base.point.y:.3f} '
             f'z={pt_base.point.z:.3f} (cam Z={z:.3f})', throttle_duration_sec=1.0)
 
+    # ── Search-window helpers ─────────────────────────────────────────────────
+
+    def _deproject(self, u, v, z):
+        """Pixel + depth → 3D point in the camera optical frame (REP 103)."""
+        pt = PointStamped()
+        pt.header.frame_id = self._depth_frame
+        pt.header.stamp = rclpy.time.Time().to_msg()   # latest available transform
+        pt.point.x = float((u - self._cx) * z / self._fx)
+        pt.point.y = float((v - self._cy) * z / self._fy)
+        pt.point.z = float(z)
+        return pt
+
+    def _in_camera_view(self, p):
+        """Is this optical-frame point on the camera's line of sight at all?
+
+        In front of the lens, and projecting onto the sensor. This is the test that
+        catches the 2026-08-14 target: base_link (0.154, -0.291, -0.003) is optical
+        (0.291, 0.068, 0.054), which projects to pixel column cx+2561 on a 640-wide
+        image. Nothing the camera can see lands there.
+
+        Deliberately NOT a depth-clip check, which would be a different question --
+        "do I trust this depth measurement", asked and answered in
+        _detect_box_pixels() where an actual measurement exists. A latched point is
+        a remembered world coordinate, not a reading, so the clip planes do not
+        apply to it. That distinction matters concretely: at the dock the box sits
+        0.24 m from base_link but only 0.14 m from the lens, INSIDE the 0.15 m near
+        clip -- which is exactly why the approach takes its final reading at
+        FINAL_READ_DIST and drives the last few centimetres blind. Applying the
+        clip band here would suppress the latch for the whole grasp phase.
+
+        For a LIVE detection this can never fire -- deprojecting an in-image pixel
+        always lands back inside the image, by construction. It earns its place on
+        the LATCHED replay path, where a fixed world point is re-expressed in
+        base_link at 20 Hz as the robot drives and turns, and can drift to somewhere
+        the camera is no longer looking while still being published as a sighting.
+        """
+        if self._fx is None or self._img_w is None:
+            return True                      # no intrinsics yet — cannot judge
+        if p.z <= 0.0:
+            return False                     # behind the lens
+        u = p.x * self._fx / p.z + self._cx
+        v = p.y * self._fy / p.z + self._cy
+        return 0 <= u < self._img_w and 0 <= v < self._img_h
+
+    def _in_search_window(self, p):
+        """Is this base_link point inside the plausible pick volume?
+
+        An axis-aligned box rather than a projected image ROI on purpose: it is
+        stated in the frame the arm actually plans in, so it stays meaningful if the
+        camera is re-mounted or its intrinsics change, and it is directly comparable
+        against the numbers in config/scene.yaml and reach_map.csv.
+        """
+        if not self.get_parameter('search_enabled').value:
+            return True
+        return (self.get_parameter('search_x_min').value <= p.x
+                <= self.get_parameter('search_x_max').value
+                and abs(p.y) <= self.get_parameter('search_y_abs').value
+                and self.get_parameter('search_z_min').value <= p.z
+                <= self.get_parameter('search_z_max').value)
+
     # ── Detection helper ──────────────────────────────────────────────────────
 
     def _detect_box_pixels(self, bgr, depth, h, w):
-        """Return a list of (u, v, median_depth) for every valid blue blob — not just
-        the nearest. Selection among candidates (e.g. rightmost-first ordering) is done
-        by the caller in base_link, not here in pixel/depth space."""
+        """Return a list of (u, v, median_depth, area) for every valid blue blob — not
+        just the nearest. Selection among candidates (e.g. rightmost-first ordering) is
+        done by the caller in base_link, not here in pixel/depth space.
+
+        Depth samples outside the camera's own clip planes are discarded here rather
+        than being averaged in: a single sub-near-clip sample in the 5x5 patch drags
+        the median down, and the deprojection then scales the pixel offset by that
+        wrong (small) Z, throwing the resulting 3D point far off-axis. See the
+        DEPTH_MIN_DEFAULT note at the top for the run this actually broke."""
+        d_min = float(self.get_parameter('depth_min').value)
+        d_max = float(self.get_parameter('depth_max').value)
+
         hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
         mask = cv2.inRange(hsv, BLUE_HSV_LO, BLUE_HSV_HI)
         kernel = np.ones((5, 5), np.uint8)
@@ -257,8 +379,10 @@ class BoxPoseEstimator(Node):
 
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         candidates = []
+        n_bad_depth = 0
         for c in contours:
-            if cv2.contourArea(c) < MIN_CONTOUR_AREA:
+            area = cv2.contourArea(c)
+            if area < MIN_CONTOUR_AREA:
                 continue
             m = cv2.moments(c)
             if m['m00'] == 0:
@@ -271,20 +395,58 @@ class BoxPoseEstimator(Node):
                     ny, nx = v + dy, u + dx
                     if 0 <= ny < h and 0 <= nx < w:
                         d = depth[ny, nx]
-                        if np.isfinite(d) and d > 0.05:
+                        if np.isfinite(d) and d_min <= d <= d_max:
                             depths.append(d)
             if depths:
                 z = float(np.median(depths))
-                candidates.append((u, v, z))
+                candidates.append((u, v, z, float(area)))
+            else:
+                n_bad_depth += 1
+        if n_bad_depth:
+            self.get_logger().info(
+                f'{n_bad_depth} blue blob(s) had no depth sample inside '
+                f'[{d_min:.2f}, {d_max:.2f}] m — discarded',
+                throttle_duration_sec=3.0)
         return candidates
 
-    def _publish_debug_image(self, bgr, header, u, v, pt):
+    def _publish_debug_image(self, bgr, header, best, rejected):
+        """Overlay the selection on /box_detection_debug.
+
+        Rejected blobs are drawn too, in red, with the base_link coordinate that got
+        them rejected. Without this the window is invisible: a silently-dropped blob
+        and a blob that was never detected look identical from outside, which is the
+        position the 2026-08-14 investigation was in -- the log said "2 boxes
+        visible" but there was no way to see WHERE the second one was.
+        """
         vis = bgr.copy()
-        cv2.circle(vis, (u, v), 18, (0, 255, 0), 2)
-        cv2.drawMarker(vis, (u, v), (0, 255, 0), cv2.MARKER_CROSS, 20, 2)
-        label = f'x={pt.x:.2f} y={pt.y:.2f} z={pt.z:.2f} m'
-        cv2.putText(vis, label, (u + 22, v - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2, cv2.LINE_AA)
+
+        for (pt_base, u, v, _z, area) in rejected:
+            p = pt_base.point
+            cv2.drawMarker(vis, (u, v), (0, 0, 255), cv2.MARKER_TILTED_CROSS, 18, 2)
+            cv2.putText(vis, f'X ({p.x:.2f},{p.y:+.2f},{p.z:+.2f}) {area:.0f}px',
+                        (u + 14, v + 16), cv2.FONT_HERSHEY_SIMPLEX, 0.42,
+                        (0, 0, 255), 1, cv2.LINE_AA)
+
+        if best is not None:
+            pt_base, u, v, _z, area = best
+            p = pt_base.point
+            cv2.circle(vis, (u, v), 18, (0, 255, 0), 2)
+            cv2.drawMarker(vis, (u, v), (0, 255, 0), cv2.MARKER_CROSS, 20, 2)
+            cv2.putText(vis, f'x={p.x:.2f} y={p.y:.2f} z={p.z:.2f} m ({area:.0f}px)',
+                        (u + 22, v - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.55,
+                        (0, 255, 0), 2, cv2.LINE_AA)
+
+        if self.get_parameter('search_enabled').value:
+            banner = (f"win x[{self.get_parameter('search_x_min').value:.2f},"
+                      f"{self.get_parameter('search_x_max').value:.2f}] "
+                      f"|y|<{self.get_parameter('search_y_abs').value:.2f} "
+                      f"z[{self.get_parameter('search_z_min').value:+.2f},"
+                      f"{self.get_parameter('search_z_max').value:+.2f}]")
+        else:
+            banner = 'search window DISABLED'
+        cv2.putText(vis, banner, (8, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                    (255, 255, 0), 1, cv2.LINE_AA)
+
         try:
             self.debug_pub.publish(self.bridge.cv2_to_imgmsg(vis, 'bgr8'))
         except Exception:
@@ -308,6 +470,40 @@ class BoxPoseEstimator(Node):
                 TARGET_FRAME, 'map',
                 rclpy.time.Time(), timeout=Duration(seconds=0.05))
             pt_base = do_transform_point(self._last_pose_map, tf)
+
+            # The latch is a fixed world point, but base_link is not: as the robot
+            # drives and turns, an old latch can transform to somewhere the box
+            # cannot be and still be republished at 20 Hz as if it were a sighting.
+            # Consumers cannot tell the difference -- /box_pose carries the current
+            # timestamp either way, which is exactly why /box_detection_age exists.
+            # Both gates apply here for the same reason they apply to live detections.
+            if not self._in_search_window(pt_base.point):
+                self.get_logger().info(
+                    f'latched box now outside the search window '
+                    f'({pt_base.point.x:.3f}, {pt_base.point.y:+.3f}, '
+                    f'{pt_base.point.z:+.3f}) — not republishing',
+                    throttle_duration_sec=5.0)
+                return
+
+            # Is the latched point still somewhere the camera can see? Checked in the
+            # optical frame, because the camera sits 0.1 m ahead of and 0.065 m above
+            # base_link, so "in front of the robot" and "in view" are not the same
+            # test. Skipped silently if the depth frame is not up yet.
+            if self._depth_frame is not None:
+                try:
+                    tf_opt = self.tf_buffer.lookup_transform(
+                        self._depth_frame, 'map',
+                        rclpy.time.Time(), timeout=Duration(seconds=0.05))
+                    pt_opt = do_transform_point(self._last_pose_map, tf_opt)
+                    if not self._in_camera_view(pt_opt.point):
+                        self.get_logger().info(
+                            f'latched box no longer in the camera view '
+                            f'(optical z={pt_opt.point.z:.3f} m) — not republishing',
+                            throttle_duration_sec=5.0)
+                        return
+                except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
+                        tf2_ros.ExtrapolationException):
+                    pass
 
             pose = PoseStamped()
             pose.header.frame_id = TARGET_FRAME

@@ -50,7 +50,7 @@ from nav_msgs.msg import Odometry
 from nav2_msgs.action import NavigateToPose
 
 from moveit_msgs.action import MoveGroup, ExecuteTrajectory
-from moveit_msgs.srv import ApplyPlanningScene, GetCartesianPath
+from moveit_msgs.srv import ApplyPlanningScene, GetCartesianPath, GetPositionIK
 from moveit_msgs.msg import (
     MotionPlanRequest, Constraints, JointConstraint,
     PositionConstraint, OrientationConstraint, BoundingVolume,
@@ -298,7 +298,15 @@ EXEC_TIMEOUT_SEC = 90.0
 #
 # For the short approach/retreat segments either side of a grasp or a place, the
 # straight line is the whole point, so those use /compute_cartesian_path instead.
-CART_MAX_STEP     = 0.005   # interpolation step (m). 5 mm over a 60 mm move = 12 waypoints.
+CART_MAX_STEP     = 0.002   # interpolation step (m). 2 mm over a 60 mm move = 30 waypoints.
+# Reduced from 5 mm on 2026-08-21. computeCartesianPath seeds each waypoint's IK from
+# the PREVIOUS waypoint's solution; the closer the waypoints, the closer the seed, and
+# the less often kdl_kinematics_plugin fails to converge and falls back to a RANDOM
+# restart (kinematics_solver_attempts: 20). Every random restart is a chance to land on
+# a different IK branch, and near the workspace boundary -- where this grasp lives, at
+# 99.4% of measured max reach -- that happens often. Measured on the 2026-08-21 run at
+# 5 mm: total joint path 3.240 rad for a 0.060 m lift (54 rad/m, against ~5-8 rad/m for
+# a clean descend) with a 0.1404 rad single-step outlier against a 0.0546 median.
 CART_MIN_FRACTION = 0.90    # accept the path only if the interpolator covered >= 90%
 MOVEIT_SUCCESS = 1
 
@@ -324,6 +332,8 @@ class NavPickOrchestrator(Node):
         # returned trajectory through /execute_trajectory. MoveGroup's own action
         # cannot do this — it only takes goal CONSTRAINTS, never a precomputed path.
         self._cart  = self.create_client(GetCartesianPath, '/compute_cartesian_path')
+        # Single-solve IK, used by go_pose_branch() for the near-boundary descend/lift.
+        self._ik    = self.create_client(GetPositionIK, '/compute_ik')
         self._exec  = ActionClient(self, ExecuteTrajectory, '/execute_trajectory')
         self._scene = self.create_client(ApplyPlanningScene, '/apply_planning_scene')
 
@@ -333,6 +343,7 @@ class NavPickOrchestrator(Node):
         self._last_gripper   = [0.0] * len(GRIPPER_OPEN)   # 1 joint (mimic followers)
         self._weld_active    = False
         self._gripper_actual = GRIPPER_OPEN[0]   # actual position from /joint_states
+        self._arm_actual = None                  # live ARM joint positions (IK seed)
         self._bumper_contact = False              # bumper oracle from smart_grasp
         self.create_subscription(Bool, '/grasp_attach', self._weld_cb, 10)
         self.create_subscription(JointState, '/joint_states',
@@ -1460,6 +1471,13 @@ class NavPickOrchestrator(Node):
             self._gripper_actual = msg.position[idx]
         except ValueError:
             pass
+        # Also latch the ARM joints. solve_ik_seeded() needs the arm's ACTUAL
+        # configuration as the IK seed: seeding from the real current pose is what
+        # keeps the returned solution on the SAME branch the arm is already in.
+        try:
+            self._arm_actual = [msg.position[msg.name.index(j)] for j in ARM_JOINTS]
+        except ValueError:
+            pass
 
     def _bumper_cb(self, msg: Bool):
         self._bumper_contact = msg.data
@@ -1817,6 +1835,140 @@ class NavPickOrchestrator(Node):
             pt.accelerations = [a / (k * k) for a in pt.accelerations]
         return traj
 
+    def solve_ik_seeded(self, x, y, z, q, label, timeout=1.0, quiet=False):
+        """One IK solve at (x, y, z, q), SEEDED from the arm's actual configuration.
+
+        Returns a joint list, or None. The seed is the point: kdl_kinematics_plugin
+        runs a seeded Newton iteration, so starting from where the arm already is
+        keeps the answer on the SAME IK branch instead of some other valid one.
+        """
+        if self._arm_actual is None:
+            self.get_logger().warn(f'[{label}] no /joint_states yet — cannot seed IK')
+            return None
+        if not self._ik.service_is_ready():
+            self._ik.wait_for_service(timeout_sec=2.0)
+        if not self._ik.service_is_ready():
+            self.get_logger().warn(f'[{label}] /compute_ik unavailable')
+            return None
+
+        req = GetPositionIK.Request()
+        req.ik_request.group_name    = ARM_GROUP
+        req.ik_request.ik_link_name  = TCP_LINK
+        req.ik_request.avoid_collisions = True
+        # ik_request.timeout is a builtin_interfaces/Duration MESSAGE; the `Duration`
+        # imported here is rclpy's class, so convert rather than constructing it raw.
+        req.ik_request.timeout = Duration(seconds=timeout).to_msg()
+        req.ik_request.robot_state.joint_state.name     = list(ARM_JOINTS)
+        req.ik_request.robot_state.joint_state.position = list(self._arm_actual)
+        # is_diff: this joint_state names only the 6 ARM joints, not the whole robot
+        # (gripper, wheels, ...). Without is_diff MoveIt treats the message as a
+        # COMPLETE state and every unnamed joint defaults to 0, which is both a wrong
+        # collision world and a wrong seed. With is_diff it is applied as a delta on
+        # top of the live scene state, which is what "seed from where the arm is"
+        # actually requires.
+        req.ik_request.robot_state.is_diff = True
+        ps = req.ik_request.pose_stamped
+        ps.header.frame_id = PLANNING_FRAME
+        ps.pose.position = Point(x=float(x), y=float(y), z=float(z))
+        (ps.pose.orientation.x, ps.pose.orientation.y,
+         ps.pose.orientation.z, ps.pose.orientation.w) = (float(v) for v in q)
+
+        fut = self._ik.call_async(req)
+        rclpy.spin_until_future_complete(self, fut, timeout_sec=5.0)
+        if not fut.done() or fut.result() is None:
+            self.get_logger().warn(f'[{label}] IK service gave no answer')
+            return None
+        res = fut.result()
+        if res.error_code.val != MOVEIT_SUCCESS:
+            self.get_logger().warn(
+                f'[{label}] IK failed (error_code {res.error_code.val})')
+            return None
+        try:
+            names = list(res.solution.joint_state.name)
+            sol = [res.solution.joint_state.position[names.index(j)]
+                   for j in ARM_JOINTS]
+        except (ValueError, IndexError):
+            self.get_logger().warn(f'[{label}] IK answer missing arm joints')
+            return None
+
+        if not quiet:
+            delta = max(abs(a - b) for a, b in zip(sol, self._arm_actual))
+            self.get_logger().info(
+                f'[{label}] IK solved, largest joint change from current: {delta:.4f} rad')
+        return sol
+
+    # tries=3 since 2026-08-25: with pick_ik (local optimisation from the seed) the
+    # answer is seed-consistent by construction, so repeated sampling is nearly
+    # redundant. Kept at a small number rather than removed so a solver regression --
+    # or a fall back to KDL -- still gets caught by the spread in the log line below.
+    def solve_ik_nearest(self, x, y, z, q, label, tries=3):
+        """Call IK several times and keep the solution CLOSEST to the current pose.
+
+        Necessary because kdl_kinematics_plugin does not honour the seed once the
+        seeded Newton iteration fails to converge -- it falls back to a RANDOM restart
+        (kinematics_solver_attempts: 20). Near the workspace boundary that failure is
+        the common case, so a single seeded call returns an essentially arbitrary
+        branch: measured 2026-08-25, one call came back 1.636 rad from the arm's
+        actual configuration despite being seeded with it.
+
+        Since the restarts are random, sampling repeatedly explores the branches and
+        the minimum-distance answer is the same-branch one when it exists. This is a
+        workaround for the solver, not a fix -- pick_ik/TRAC-IK use local optimisation
+        and return a seed-consistent answer directly (see kinematics.yaml).
+        """
+        best, best_d = None, float('inf')
+        seen = []
+        for _ in range(tries):
+            sol = self.solve_ik_seeded(x, y, z, q, label, quiet=True)
+            if sol is None:
+                continue
+            d = max(abs(a - b) for a, b in zip(sol, self._arm_actual))
+            seen.append(d)
+            if d < best_d:
+                best, best_d = sol, d
+        if best is None:
+            self.get_logger().warn(f'[{label}] IK found no solution in {tries} tries')
+            return None
+        self.get_logger().info(
+            f'[{label}] IK {len(seen)}/{tries} solved; closest branch {best_d:.4f} rad '
+            f'(worst {max(seen):.4f}) — using closest')
+        return best
+
+    def go_pose_branch(self, x, y, z, q, label, max_jump=1.0):
+        """Move to a pose by solving IK ONCE and driving there as a JOINT goal.
+
+        Why this exists (2026-08-21). The descend/lift sit at ~96-99% of this arm's
+        measured max radial reach. computeCartesianPath samples the line and calls IK
+        per waypoint, seeded from the previous solution; near the boundary those
+        seeded solves keep failing, and kdl_kinematics_plugin then does a RANDOM
+        restart (kinematics_solver_attempts: 20). Consecutive waypoints therefore land
+        on DIFFERENT IK branches. Every waypoint pose is exactly on the line, so
+        `fraction` reports 100% and nothing looks wrong -- but JointTrajectoryController
+        interpolates between those waypoints in JOINT space, so the tool sweeps out
+        horizontally and back between samples. Measured: 3.240 rad of joint travel for
+        a 0.060 m lift (54 rad/m, vs ~5-8 rad/m for a clean move).
+
+        Solving IK ONCE removes the mechanism entirely: one solve, one branch, and the
+        controller interpolates between two configurations that are already close
+        together. The straight-line guarantee is given up -- but at this reach a
+        "straight line" was being executed as a joint-space swing anyway, so the
+        guarantee was nominal. Over the short hover->grasp move the deviation from
+        straight is second-order and far smaller than the excursions it replaces.
+
+        max_jump rejects a solution that is a branch flip relative to where the arm
+        already is; the caller falls back to the Cartesian path in that case.
+        """
+        sol = self.solve_ik_nearest(x, y, z, q, label)
+        if sol is None:
+            return None
+        delta = max(abs(a - b) for a, b in zip(sol, self._arm_actual))
+        if delta > max_jump:
+            self.get_logger().warn(
+                f'[{label}] IK returned a different branch ({delta:.3f} rad > '
+                f'{max_jump} rad) — refusing it')
+            return None
+        return self._send(self._joint_constraints(sol), label)
+
     def go_pose_straight(self, x, y, z, q, label, min_fraction=CART_MIN_FRACTION):
         """Move the TCP in a STRAIGHT LINE to (x, y, z), holding orientation `q`.
 
@@ -1854,7 +2006,37 @@ class NavPickOrchestrator(Node):
         req.link_name        = TCP_LINK
         req.waypoints        = [target]
         req.max_step         = CART_MAX_STEP
-        req.jump_threshold   = 0.0     # 0 = disable the joint-space jump check
+        # jump_threshold stays 0 (the RELATIVE, scaling-factor form -- unreliable on
+        # short paths because it compares each step against the mean step). The
+        # ABSOLUTE per-joint form below is the one that actually guards this failure.
+        req.jump_threshold   = 0.0
+        # 2026-08-21: this was the whole bug. With every jump threshold at 0, MoveIt
+        # does NOT check joint-space continuity between consecutive Cartesian
+        # waypoints -- `fraction` only counts waypoints_achieved/waypoints_requested,
+        # so it reports 100% for a path that is geometrically straight in CARTESIAN
+        # space but discontinuous in JOINT space.
+        #
+        # That matters here because the hover sits at r = sqrt(0.240^2 + 0.075^2)
+        # = 0.2514 m against a measured max radial reach of 0.253 m -- 99.4% of the
+        # envelope. In that near-singular band the IK solution manifold is nearly
+        # flat, and kdl_kinematics_plugin (kinematics_solver_attempts: 20) reseeds
+        # RANDOMLY whenever a seeded solve fails to converge. Consecutive waypoints
+        # therefore land on different IK branches (elbow-up vs elbow-down). Each is
+        # individually valid, so fraction stays 100%, and JointTrajectoryController
+        # then splines between them IN JOINT SPACE -- the end effector traces
+        # whatever curve that produces: out and back, repeatedly.
+        #
+        # joint2_to_joint1 + joint3_to_joint2 form the planar 2R sub-chain in the
+        # vertical reach plane, so radial extension is a function of exactly those
+        # two -- which is why the symptom is specifically a J2/J3 event, and why it
+        # appears on the descend AND the lift (same path, reversed).
+        #
+        # 0.15 rad (~8.6 deg) between 5 mm waypoints is far above any legitimate
+        # step and far below a branch flip. Exceeding it truncates the path, the
+        # fraction drops below CART_MIN_FRACTION, and the existing joint-space
+        # fallback fires -- converting a SILENT wrong-path into a LOUD, visible one.
+        req.revolute_jump_threshold  = 0.15
+        req.prismatic_jump_threshold = 0.0   # no prismatic joints on this arm
         req.avoid_collisions = True
 
         self.get_logger().info(f'[{label}] planning STRAIGHT line…')
@@ -1866,6 +2048,36 @@ class NavPickOrchestrator(Node):
             return self.go_pose(x, y, z, q, label)
 
         frac = float(fut.result().fraction)
+
+        # Joint-path-to-Cartesian-path ratio: sum |q[k+1]-q[k]| over the returned
+        # waypoints, divided by the straight-line distance actually travelled. A
+        # genuinely straight descend in this workspace costs roughly 5-8 rad/m; an
+        # IK branch flip costs an order of magnitude more. This is the number that
+        # distinguishes "straight line" from "straight line with a hidden
+        # discontinuity", which `fraction` alone cannot -- fraction counts achieved
+        # waypoints, not continuity between them.
+        pts = fut.result().solution.joint_trajectory.points
+        if len(pts) > 1:
+            steps = [max(abs(b - a) for a, b in zip(p0.positions, p1.positions))
+                     for p0, p1 in zip(pts, pts[1:])]
+            jpath = sum(
+                sum(abs(b - a) for a, b in zip(p0.positions, p1.positions))
+                for p0, p1 in zip(pts, pts[1:]))
+            worst = max(steps)
+            # A 5 mm Cartesian step should cost a small, roughly uniform joint step.
+            # A single step far above the rest is an IK BRANCH FLIP: the solver
+            # reseeded and returned a different arm configuration for essentially the
+            # same pose. Individually valid, so `fraction` never notices -- but the
+            # controller splines through it in joint space and the tool swings.
+            self.get_logger().info(
+                f'[{label}] path diag: {len(pts)} waypoints, total joint path '
+                f'{jpath:.3f} rad, largest single step {worst:.4f} rad '
+                f'(median {sorted(steps)[len(steps)//2]:.4f})')
+            if worst > 0.15:
+                self.get_logger().warn(
+                    f'[{label}] DISCONTINUITY: one waypoint jumps {worst:.3f} rad — '
+                    f'this is an IK branch flip, not a straight-line motion')
+
         if frac < min_fraction:
             self.get_logger().warn(
                 f'[{label}] straight path only {frac * 100:.0f}% solvable '
@@ -1965,7 +2177,14 @@ class NavPickOrchestrator(Node):
         # the elbow higher — and with the pickup table raised to 0.14 m the elbow runs out
         # of room. Measured: 0.12 makes the hover pose unplannable at the 0.24 m dock
         # ("[hover] FAILED"), while 0.06 plans fine and still clears the table.
-        HOVER      = 0.06
+        # Reduced 0.06 -> 0.03 on 2026-08-21. Hover radius is what puts the START of the
+        # descend on the workspace boundary: r = sqrt(x^2 + z^2), and with x pinned at
+        # 0.240 m by the dock geometry, the hover height is the ONLY term still free.
+        #   0.060 m hover -> r = sqrt(0.240^2 + 0.075^2) = 0.2514 m = 99.4% of max reach
+        #   0.030 m hover -> r = sqrt(0.240^2 + 0.045^2) = 0.2442 m = 96.5% of max reach
+        # Also shortens the path through the ill-conditioned band. This is a mitigation,
+        # not the fix -- x = 0.240 dominates the radius and is set by the table geometry.
+        HOVER      = 0.03
         GRASP_Z    = GRASP_ABOVE   # 0.0 — gripper_tcp IS the grasp point (calibrated)
         STABLE_TOL = 0.012   # estimate "settled" when it shifts < 1.2 cm
         MAX_ITERS  = 3
@@ -1993,11 +2212,16 @@ class NavPickOrchestrator(Node):
         # every clearance is still attempted in order if the reordered ones fail — it only
         # changes which one goes first. See reach_lookup.py for why "outside the swept
         # envelope" deliberately falls back to the original order instead of guessing.
-        clearance_order = reach_lookup.rank_clearances(tx, ty, tz, (HOVER, 0.045, 0.03))
-        if clearance_order != [HOVER, 0.045, 0.03]:
+        # De-duplicate: HOVER became 0.03 on 2026-08-21, which is already in this list,
+        # so the candidates were (0.03, 0.045, 0.03) and 0.03 got planned TWICE -- two
+        # identical 5 s OMPL failures back to back, visible in the log as
+        # "[hover 0.030 m] FAILED" appearing twice. dict.fromkeys preserves order.
+        _clearances = tuple(dict.fromkeys((HOVER, 0.045, 0.03)))
+        clearance_order = reach_lookup.rank_clearances(tx, ty, tz, _clearances)
+        if clearance_order != list(_clearances):
             self.get_logger().info(
                 f'reach map reorders hover attempt to {clearance_order} '
-                f'(originally {[HOVER, 0.045, 0.03]})')
+                f'(originally {list(_clearances)})')
         hovered = False
         for clearance in clearance_order:
             if self.go_pose(tx, ty, tz + clearance, q, f'hover {clearance:.3f} m'):
@@ -2026,9 +2250,16 @@ class NavPickOrchestrator(Node):
         # STRAIGHT is load-bearing here, not decorative. A joint-space plan to this
         # same pose arrives along an arc, and the lateral component of that arc is
         # what knocks the 35 mm box over before the fingers reach it.
-        if not self.go_pose_straight(tx, ty, tz + GRASP_Z, q, 'grasp'):
-            self.get_logger().error('grasp pose failed — aborting')
-            return False
+        # Single-branch IK first (see go_pose_branch): at this reach the Cartesian
+        # sampler reconfigures between waypoints and the "straight" path executes as a
+        # joint-space swing. Fall back to the Cartesian path only if IK can't produce a
+        # same-branch solution, so nothing is lost when the arm is well-conditioned.
+        if self.go_pose_branch(tx, ty, tz + GRASP_Z, q, 'grasp') is not True:
+            self.get_logger().info('[grasp] single-branch IK unavailable — '
+                                   'falling back to the Cartesian path')
+            if not self.go_pose_straight(tx, ty, tz + GRASP_Z, q, 'grasp'):
+                self.get_logger().error('grasp pose failed — aborting')
+                return False
 
         # Remove table collision so the lift is not blocked by a phantom
         # table-gripper collision. Done once, before the attempt loop.
@@ -2049,10 +2280,15 @@ class NavPickOrchestrator(Node):
                     f'[grasp] not verified — retry {attempt - 1}/{MAX_GRASP_RETRIES}')
                 self.attach(False)                      # drop any stale weld
                 self.set_gripper(GRIPPER_OPEN, 'open')
-                if not self.go_pose_straight(tx, ty, tz + HOVER, q, 'hover for retry'):
+                if (self.go_pose_branch(tx, ty, tz + HOVER, q, 'hover for retry')
+                        is not True
+                        and not self.go_pose_straight(tx, ty, tz + HOVER, q,
+                                                      'hover for retry')):
                     break
-                if not self.go_pose_straight(tx, ty, tz + GRASP_Z, q,
-                                             f'grasp retry {attempt - 1}'):
+                if (self.go_pose_branch(tx, ty, tz + GRASP_Z, q,
+                                        f'grasp retry {attempt - 1}') is not True
+                        and not self.go_pose_straight(tx, ty, tz + GRASP_Z, q,
+                                                      f'grasp retry {attempt - 1}')):
                     break
 
             # True box height BEFORE the close — the reference for the ground-truth
@@ -2099,16 +2335,34 @@ class NavPickOrchestrator(Node):
                     '[grasp] no aperture stall, but physics grasp is active — '
                     'lifting anyway and letting ground truth decide')
 
-            # Lift — retry 3× (OMPL can be flaky on the first attempt).
-            # STRAIGHT up: this is the motion whose shortfall was measured at 0.031 m
-            # against a commanded 0.060 m, because the joint-space plan arced and
-            # rotated instead of rising. With a task-space path the box should now
-            # actually rise what it was told to, which also restores the meaning of
-            # _verify_grasp_truth's min_rise threshold.
+            # Lift — retry 3x AT THE SAME HEIGHT (OMPL/execution can be flaky on the
+            # first attempt). STRAIGHT up: this is the motion whose shortfall was
+            # measured at 0.031 m against a commanded 0.060 m, because the joint-space
+            # plan arced and rotated instead of rising. With a task-space path the box
+            # should now actually rise what it was told to, which also restores the
+            # meaning of _verify_grasp_truth's min_rise threshold.
+            #
+            # BUG FIXED 2026-08-19: this used to retry at (HOVER, 0.045, 0.03) -- a
+            # DESCENDING ladder copy-pasted from the pre-grasp hover-clearance loop
+            # above, where trying lower makes sense (getting closer to an
+            # unreachable target). For a LIFT that logic is backwards: a "failed"
+            # attempt still executes the full trajectory before go_pose_straight
+            # reports false (see its docstring), so what actually happened on
+            # hardware was the arm lifting to 6 cm, then being commanded back DOWN
+            # to 4.5 cm, then DOWN again to 3 cm -- visible as the box bobbing
+            # up/down/up/down three times right after the grasp, for no reason
+            # visible from outside. Retrying the SAME target is the correct fix: a
+            # failure here means "that attempt didn't execute cleanly", not "try a
+            # smaller lift."
             lifted = False
-            for clearance in (HOVER, 0.045, 0.03):
-                if self.go_pose_straight(tx, ty, tz + clearance, q,
-                                         f'lift {clearance:.3f} m'):
+            for i in range(3):
+                lbl = f'lift {HOVER:.3f} m (attempt {i + 1}/3)'
+                # Same reasoning as the descend: the lift STARTS at the boundary pose,
+                # so it re-traverses the same ill-conditioned region in reverse.
+                if self.go_pose_branch(tx, ty, tz + HOVER, q, lbl) is True:
+                    lifted = True
+                    break
+                if self.go_pose_straight(tx, ty, tz + HOVER, q, lbl):
                     lifted = True
                     break
                 time.sleep(0.3)
@@ -2203,7 +2457,8 @@ class NavPickOrchestrator(Node):
         if not self.go_pose(sx, sy, hover_z, q, f'stack hover L{level}'):
             self.get_logger().error('stack hover failed — aborting place')
             return False
-        if not self.go_pose_straight(sx, sy, place_z, q, f'stack place L{level}'):
+        if (self.go_pose_branch(sx, sy, place_z, q, f'stack place L{level}') is not True
+                and not self.go_pose_straight(sx, sy, place_z, q, f'stack place L{level}')):
             self.get_logger().error('stack place failed — aborting place')
             return False
 
@@ -2218,8 +2473,10 @@ class NavPickOrchestrator(Node):
 
         # Lift straight up off the placed box, then retract home.
         for attempt in range(3):
-            if self.go_pose_straight(sx, sy, hover_z, q,
-                                     f'stack retract L{level} (try {attempt + 1})'):
+            lbl = f'stack retract L{level} (try {attempt + 1})'
+            if self.go_pose_branch(sx, sy, hover_z, q, lbl) is True:
+                break
+            if self.go_pose_straight(sx, sy, hover_z, q, lbl):
                 break
             time.sleep(0.5)
         self.go_named('home')
@@ -2797,7 +3054,11 @@ class NavPickOrchestrator(Node):
         # Straight down, same reason as the grasp descent — and more so once there is
         # a box already on the table: an arced approach sweeps the held box sideways
         # into the stack it is meant to land on.
-        if not self.go_pose_straight(px, py, place_z, q, f'place set L{level}'):
+        # Single-branch IK first, same as the pick descend. The place descend was left
+        # on the plain Cartesian path until 2026-08-25, which is why the j2/j3 swing
+        # kept appearing on the PLACE side after the pick side was fixed.
+        if (self.go_pose_branch(px, py, place_z, q, f'place set L{level}') is not True
+                and not self.go_pose_straight(px, py, place_z, q, f'place set L{level}')):
             # Unlike the hover failure above, here the arm IS over the table --
             # the hover pose succeeded. Releasing drops the box a few centimetres
             # onto the target rather than throwing it across the room, so this is
@@ -2819,8 +3080,13 @@ class NavPickOrchestrator(Node):
         # Lift clear of the placed box — straight up, so the retreating gripper does
         # not sweep the box it has just released off the table.
         for attempt in range(3):
-            if self.go_pose_straight(px, py, hover_z, q,
-                                     f'place retract L{level} (try {attempt + 1})'):
+            lbl = f'place retract L{level} (try {attempt + 1})'
+            # This is the move that was still swinging after the box was released:
+            # it starts at the place pose and retreats straight up through the same
+            # ill-conditioned region, so it hits the identical branch-flip mechanism.
+            if self.go_pose_branch(px, py, hover_z, q, lbl) is True:
+                break
+            if self.go_pose_straight(px, py, hover_z, q, lbl):
                 break
             time.sleep(0.3)
 

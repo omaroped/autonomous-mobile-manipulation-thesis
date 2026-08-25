@@ -18,6 +18,7 @@ after WAIT_TIMEOUT_SEC with a clear message if one never appears.
 import sys
 
 import rclpy
+from rclpy.utilities import remove_ros_args
 from lifecycle_msgs.srv import GetState
 
 WAIT_TIMEOUT_SEC = 60.0
@@ -25,7 +26,18 @@ POLL_SEC         = 1.0
 
 
 def main():
-    names = sys.argv[1:]
+    # Strip ROS arguments before reading node names. launch_ros appends
+    # `--ros-args -r __node:=...` to every Node's command line, so a bare
+    # sys.argv[1:] picked those up as node names and tried to create a client for
+    # '/--ros-args/get_state' -- an invalid service name, which raised
+    # InvalidServiceNameException and killed this process on EVERY launch since it
+    # was added. The failure was near-invisible: the launch file starts the Nav2
+    # lifecycle manager from this process's OnProcessExit, so a crash-on-startup
+    # fired that handler INSTANTLY and the manager began bringup with no wait at
+    # all -- reintroducing the exact race this script exists to remove, and
+    # surfacing downstream as "Unable to start transition 3 from current state
+    # active" on controller_server / velocity_smoother / behavior_server.
+    names = remove_ros_args(sys.argv)[1:]
     if not names:
         print('wait_for_lifecycle_node: no node names given', file=sys.stderr)
         return 1
