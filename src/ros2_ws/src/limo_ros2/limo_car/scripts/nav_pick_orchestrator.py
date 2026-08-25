@@ -827,6 +827,134 @@ class NavPickOrchestrator(Node):
 
     # ── Nav2 cmd_vel hand-off ─────────────────────────────────────────────────
 
+    def _align_to_place_tag(self):
+        """Slide sideways to face the place table's tag square-on, before docking.
+
+        Runs while Nav2 still owns /cmd_vel -- i.e. BEFORE _silence_nav2_cmdvel() --
+        because this uses a Nav2 goal, and the dock deactivates the controller server
+        the moment it takes over.
+
+        Same reasoning as the pickup side: Nav2's goal tolerance is 0.25 m, so the
+        robot stops anywhere in a half-metre circle around the staging pose, and the
+        dock's Phase A then SQUARES THE HEADING wherever that happens to be. Any
+        lateral offset left at that point turns into a diagonal approach over the
+        ~1.3 m Phase C run.
+
+        This is the same job Phase B's crab does, done with a Nav2 goal instead of two
+        in-place 90 degree pivots. The crab is the most slip-prone motion in the
+        pipeline and has been observed timing out; it stays in place as a fallback,
+        and with this running ahead of it there should be little left for it to correct.
+
+        Non-fatal: if the tag is not visible from the standoff, docking proceeds
+        exactly as before.
+        """
+        for _ in range(20):
+            rclpy.spin_once(self, timeout_sec=0.1)
+        t = self._read_tag_live()
+        if t is None:
+            self.get_logger().info(
+                '[realign] tag not visible from the standoff — skipping alignment')
+            return
+        # _read_tag_live returns (x, y, range, bearing, yaw) in base_link; y is the
+        # lateral offset, which is what the approach centre line needs corrected.
+        self._nav_place_x = self.realign_perpendicular(
+            t[1], self._nav_place_x, self._nav_place_y, self._nav_place_yaw,
+            label='place tag')
+
+    def _align_to_target_box(self):
+        """Read the target box at staging range and slide sideways to face it square-on.
+
+        Runs BEFORE visual_docking(), because Phase A's rotate-to-centre is exactly
+        what turns a lateral offset into a diagonal approach. Reading here also costs
+        nothing extra: the robot is stationary at the staging pose and the box is ~0.73 m
+        away, comfortably inside the camera's usable range.
+
+        Non-fatal by design. If the box is not visible yet, or Nav2 declines the
+        alignment goal, the cycle proceeds exactly as it did before this step existed --
+        diagonal, but working.
+        """
+        for _ in range(20):
+            rclpy.spin_once(self, timeout_sec=0.1)
+        b = self._read_box_live()
+        if b is None:
+            self.get_logger().info(
+                '[realign] no box reading at the staging pose — skipping alignment')
+            return
+        self._nav_goal_x = self.realign_perpendicular(
+            b[1], self._nav_goal_x, self._nav_goal_y, self._nav_goal_yaw,
+            label='target box')
+
+    def realign_perpendicular(self, target_base_y, goal_x, goal_y, goal_yaw,
+                              label='target', tolerance=0.02, timeout=60.0):
+        """Slide sideways via Nav2 so the approach stays PERPENDICULAR to the table.
+
+        THE PROBLEM THIS SOLVES. visual_docking()'s Phase A rotates in place until the
+        target is centred, then Phase B drives straight at it. For a target directly
+        ahead that is correct. For one offset sideways it is not: the robot pivots to
+        FACE the target and then drives along that new heading, so it reaches the box
+        travelling DIAGONALLY across the table instead of square-on. With three boxes
+        spread across the 0.30 m pickup table the outer ones sit 0.10 m off the staging
+        centre line, which at the 0.73 m staging distance is a 7.8 degree approach
+        angle. The gripper then closes on the box rotated by that angle, and the
+        chassis ends up beside the table rather than in front of it.
+
+        THE FIX. Translate instead of rotate. The robot cannot strafe -- it is
+        differential drive -- but Nav2 can reposition it, so this re-issues the staging
+        goal shifted sideways to line up with the target, keeping the approach yaw
+        unchanged. Phase A then has almost nothing left to rotate and Phase B drives in
+        square-on.
+
+        Deliberately NOT a crab manoeuvre (rotate 90, drive, rotate back). That is what
+        the place-side Phase B does, it is the most slip-prone motion a differential
+        base can make, and it has been observed timing out. Nav2 already solves
+        "get to this pose" properly.
+
+        target_base_y is the target's lateral offset in base_link (positive = left).
+        Both tables are approached at yaw = -pi/2, where base_link +Y maps to map +X,
+        so the correction is applied directly to the goal's x.
+        """
+        if abs(target_base_y) <= tolerance:
+            self.get_logger().info(
+                f'[realign] {label} is {target_base_y*1000:+.0f} mm off centre — '
+                f'within {tolerance*1000:.0f} mm, approach is already perpendicular')
+            return goal_x
+
+        new_x = goal_x + target_base_y
+        self.get_logger().info(
+            f'[realign] {label} is {target_base_y*1000:+.0f} mm off the approach centre '
+            f'line. Sliding the staging pose {new_x - goal_x:+.3f} m in map x '
+            f'({goal_x:.3f} -> {new_x:.3f}) so the approach stays perpendicular '
+            f'instead of diagonal.')
+
+        goal = NavigateToPose.Goal()
+        goal.pose.header.frame_id = 'map'
+        goal.pose.header.stamp = self.get_clock().now().to_msg()
+        goal.pose.pose.position.x = new_x
+        goal.pose.pose.position.y = goal_y
+        half = goal_yaw / 2.0
+        goal.pose.pose.orientation.z = math.sin(half)
+        goal.pose.pose.orientation.w = math.cos(half)
+
+        send_fut = self._nav.send_goal_async(goal)
+        rclpy.spin_until_future_complete(self, send_fut, timeout_sec=10.0)
+        gh = send_fut.result() if send_fut.done() else None
+        if gh is None or not gh.accepted:
+            self.get_logger().warn(
+                '[realign] Nav2 rejected the alignment goal — continuing with the '
+                'diagonal approach rather than aborting the cycle')
+            return goal_x
+
+        res_fut = gh.get_result_async()
+        rclpy.spin_until_future_complete(self, res_fut, timeout_sec=timeout)
+        if not res_fut.done():
+            self.get_logger().warn('[realign] alignment goal timed out — continuing')
+            return goal_x
+
+        self.get_logger().info('[realign] aligned — approach is now perpendicular')
+        # Returned so the caller can keep ITS goal in sync: a later realign must
+        # measure from where the robot now is, not the original staging pose.
+        return new_x
+
     def _silence_nav2_cmdvel(self):
         """Deactivate the Nav2 nodes that publish /cmd_vel so the orchestrator can
         own the topic during docking. collision_monitor publishes safety-stop zeros
@@ -3071,6 +3199,11 @@ class NavPickOrchestrator(Node):
             return False
 
         self.get_logger().info('Nav2 arrived — docking to place table…')
+
+        # Line up with the tag BEFORE handing /cmd_vel to the dock, so Phase C's
+        # ~1.3 m approach runs perpendicular to the table face rather than across it.
+        self._align_to_place_tag()
+
         self._silence_nav2_cmdvel()
         time.sleep(0.5)
 
@@ -3283,6 +3416,11 @@ class NavPickOrchestrator(Node):
 
         time.sleep(0.5)
 
+        # 1.25. Slide sideways to face the target box square-on. With three boxes on
+        #       the table the outer ones sit 0.10 m off the staging centre line, and
+        #       Phase A below would turn that into a 7.8 degree diagonal approach.
+        self._align_to_target_box()
+
         # 1.5. Visual docking
         self.visual_docking()
 
@@ -3431,6 +3569,10 @@ class NavPickOrchestrator(Node):
                 self._cycle_end()
                 break
 
+            # Same alignment as the first pick. This matters MORE here: each level
+            # fetches a different box, and after the first is removed the remaining
+            # ones are the off-centre ones.
+            self._align_to_target_box()
             self.visual_docking()
             self.pin_base()
             time.sleep(1.0)
