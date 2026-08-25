@@ -439,9 +439,25 @@ class NavPickOrchestrator(Node):
         self.declare_parameter('grasp_close_floor', -0.13)
 
         # Phase B — put the base ON the tag's face-normal line before driving in.
-        # Live param, same A/B reasoning as above:
-        #     ros2 param set /nav_pick_orchestrator dock_lateral_align false
-        self.declare_parameter('dock_lateral_align', True)
+        #
+        # DEFAULT FLIPPED TO FALSE, 2026-08-26. Phase B is the only phase that
+        # commands in-place 90 degree pivots -- the most slip-prone motion a
+        # differential base can make, executed with the arm extended and a box in the
+        # gripper -- and it timed out in BOTH logged place docks. Modelling the coded
+        # controller against its own constants (gain 2.0, floor 0.25 rad/s, tolerance
+        # 0.02 rad, 0.05 s cycle) puts convergence at 2.4-4 s against an 8 s budget,
+        # so the timeout's cause is NOT in this controller and remains unexplained.
+        #
+        # It is disabled rather than fixed because its job is already covered: the
+        # arm-side clamp in place_box Phase D bounds the same 20-40 mm of lateral
+        # offset, deterministically and instantly, and the reach map confirms the
+        # clamped target stays inside the reachable band (at y = +0.04, worse than
+        # the 0.03 clamp, x = 0.22 is still reachable at place height).
+        #
+        # Kept as a live parameter, not deleted: it is the A/B comparison condition
+        # for the thesis, and re-enabling it costs nothing.
+        #     ros2 param set /nav_pick_orchestrator dock_lateral_align true
+        self.declare_parameter('dock_lateral_align', False)
 
         self.declare_parameter('stack_count', STACK_COUNT_DEF)   # >0 → stack this many boxes
         self.declare_parameter('stack_x', STACK_X_DEFAULT)       # base_link x of foundation
@@ -3114,7 +3130,19 @@ class NavPickOrchestrator(Node):
         # means the dock was poor, and placing 20 mm off-centre on the table beats
         # aiming at a pose the arm cannot reach. It is logged loudly when it bites.
         PLACE_NEAR_EDGE_BIAS = float(self.get_parameter('place_near_edge_bias').value)
-        PLACE_MAX_LATERAL    = 0.02   # m, |y| cap on the latched drop
+        # 0.02 -> 0.03 on 2026-08-26, paired with disabling Phase B (see
+        # dock_lateral_align). Phase B was the only thing correcting the lateral offset
+        # before the approach; with it off the residual reaching this clamp is larger,
+        # so the clamp has to absorb what the crab used to. Verified against
+        # reach_map.csv rather than assumed: at place height (z = -0.025) and y = +0.04
+        # -- beyond this clamp -- x = 0.22 is still reachable, and the near-edge bias
+        # puts the target at x ~ 0.223. The wider clamp therefore stays inside the
+        # measured band.
+        #
+        # Every clamp event is logged loudly below, which makes this the dock-quality
+        # metric: the count over N place cycles measures how far off centre the base
+        # actually arrives, which is a measurement rather than an inference.
+        PLACE_MAX_LATERAL    = 0.03   # m, |y| cap on the latched drop
         raw_x, raw_y = float(drop.point.x), float(drop.point.y)
         clamped_y = max(-PLACE_MAX_LATERAL, min(PLACE_MAX_LATERAL, raw_y))
         if abs(raw_y - clamped_y) > 1e-6:
