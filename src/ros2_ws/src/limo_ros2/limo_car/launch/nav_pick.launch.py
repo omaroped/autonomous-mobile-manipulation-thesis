@@ -23,7 +23,8 @@ import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
-    DeclareLaunchArgument, IncludeLaunchDescription, TimerAction, SetLaunchConfiguration
+    DeclareLaunchArgument, IncludeLaunchDescription, TimerAction, SetLaunchConfiguration,
+    OpaqueFunction
 )
 from launch.conditions import UnlessCondition
 from launch.substitutions import LaunchConfiguration
@@ -34,6 +35,40 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 class SceneGeometryError(RuntimeError):
     """The scene is not physically achievable, or the world file disagrees."""
+
+
+class LocalizationConfigError(RuntimeError):
+    """The localization and odometry settings cannot work together."""
+
+
+def validate_localization(localization, odometry_source):
+    """Refuse configurations that degrade silently instead of failing.
+
+    ENCODER odometry (odometry_source=0) integrates real wheel rotation, so /odom
+    drifts exactly as it does on hardware. Ground-truth localization publishes a
+    FIXED zero map->odom transform, which is only correct while odom cannot drift.
+    Put the two together and the drift accumulates behind a frozen transform with
+    nothing to correct it: the robot's believed map pose separates from reality,
+    slowly, and navigation goals go progressively wrong. Nothing errors -- the run
+    just gets worse the longer it lasts, which is the most expensive kind of bug to
+    chase.
+
+    AMCL is what makes ENCODER usable: it matches the laser against the map and
+    corrects map->odom as the drift accumulates. So ENCODER is allowed only with
+    AMCL, and that pairing is the configuration that actually rehearses hardware.
+    """
+    if str(odometry_source) == '0' and localization != 'amcl':
+        raise LocalizationConfigError(
+            f"odometry_source:=0 (ENCODER) requires localization:=amcl, "
+            f"but localization is '{localization}'.\n"
+            f"  ENCODER odometry drifts like the real robot. Ground-truth "
+            f"localization publishes a FIXED map->odom transform and cannot correct "
+            f"that drift, so the robot's believed position would separate from "
+            f"reality with nothing to catch it.\n"
+            f"  For the honest hardware rehearsal:\n"
+            f"    ros2 launch limo_car nav_pick.launch.py "
+            f"localization:=amcl odometry_source:=0\n"
+            f"  For the default perfect-localization sim, leave both unset.")
 
 
 def load_scene(pkg):
@@ -147,6 +182,19 @@ def load_scene(pkg):
     return s
 
 
+def _check_localization_config(context, *args, **kwargs):
+    """Resolve the two settings and validate them before anything starts.
+
+    Has to be an OpaqueFunction: LaunchConfiguration values do not exist while the
+    launch description is being built, only once the context is populated. Raising
+    here aborts the launch cleanly, before Gazebo or Nav2 come up.
+    """
+    validate_localization(
+        LaunchConfiguration('localization').perform(context),
+        LaunchConfiguration('odometry_source').perform(context))
+    return []
+
+
 def generate_launch_description():
     pkg      = get_package_share_directory('limo_car')
     moveit   = get_package_share_directory('limo_cobot_moveit_config')
@@ -214,6 +262,11 @@ def generate_launch_description():
     spawn_yaw_arg = DeclareLaunchArgument(
         'spawn_yaw', default_value=str(derived['spawn_yaw']),
         description='Robot spawn yaw, rad (map frame). Default from scene.yaml.')
+    odometry_source_arg = DeclareLaunchArgument(
+        'odometry_source', default_value='1',
+        description='Wheel odometry: 1 = WORLD (exact, the sim default), '
+                    '0 = ENCODER (drifts like the real robot). ENCODER requires '
+                    'localization:=amcl and the launch refuses the other combination.')
     localization_arg = DeclareLaunchArgument(
         'localization', default_value='ground_truth',
         description='ground_truth = static identity map->odom (perfect, sim only). '
@@ -305,6 +358,7 @@ def generate_launch_description():
             'spawn_x': spawn_x,
             'spawn_y': spawn_y,
             'spawn_yaw': spawn_yaw,
+            'odometry_source': LaunchConfiguration('odometry_source'),
             'use_rviz': 'false',
             'use_gzclient': use_gzclient,
             'drive_mode': drive_mode,
@@ -469,6 +523,9 @@ def generate_launch_description():
         spawn_y_arg,
         spawn_yaw_arg,
         localization_arg,
+        odometry_source_arg,
+        # Validate the pair BEFORE any node starts.
+        OpaqueFunction(function=_check_localization_config),
         use_rviz_arg,
         use_gzclient_arg,
         drive_mode_arg,

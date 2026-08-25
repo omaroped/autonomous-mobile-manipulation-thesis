@@ -22,6 +22,9 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration('use_sim_time')
     drive_mode = LaunchConfiguration('drive_mode')
     use_camera = LaunchConfiguration('use_camera')
+    # 1 = WORLD (perfect odom), 0 = ENCODER (realistic drift). See the note in
+    # gazebo/ackermann.xacro -- ENCODER requires localization:=amcl.
+    odometry_source = LaunchConfiguration('odometry_source')
 
     # finden path für Modell
     pkg_path = os.path.join(get_package_share_directory('limo_car'))
@@ -30,7 +33,8 @@ def generate_launch_description():
     # Process dynamically at runtime
     robot_description = ParameterValue(
         Command(['xacro ', xacro_file, ' drive_mode:=', drive_mode,
-                 ' use_camera:=', use_camera]),
+                 ' use_camera:=', use_camera,
+                 ' odometry_source:=', odometry_source]),
         value_type=str
     )
 
@@ -53,6 +57,11 @@ def generate_launch_description():
             'drive_mode',
             default_value='diff',
             description='Drive mode (ackermann | diff)'),
+        DeclareLaunchArgument(
+            'odometry_source',
+            default_value='1',
+            description='Wheel odometry source: 1 = WORLD (exact, sim), '
+                        '0 = ENCODER (realistic drift; requires localization:=amcl)'),
         DeclareLaunchArgument(
             'use_camera',
             default_value='true',

@@ -46,6 +46,11 @@ def generate_launch_description():
     # so only spawn_y could be moved -- and moving it desynchronised the robot from
     # AMCL's seed, which is written from the same pose. All three are arguments now
     # and nav_pick.launch.py passes them from scene.yaml's robot.spawn_pose.
+    odometry_source_arg = DeclareLaunchArgument(
+        'odometry_source', default_value='1',
+        description='1 = WORLD (exact odom), 0 = ENCODER (realistic drift; '
+                    'requires localization:=amcl)')
+
     spawn_x_arg = DeclareLaunchArgument(
         'spawn_x', default_value='-2.0',
         description='Robot spawn X in the map/world frame')
@@ -140,7 +145,8 @@ def generate_launch_description():
             'use_sim_time': 'true',
             'world': world_config,
             'drive_mode': LaunchConfiguration('drive_mode'),
-            'use_camera': LaunchConfiguration('use_camera')
+            'use_camera': LaunchConfiguration('use_camera'),
+            'odometry_source': LaunchConfiguration('odometry_source')
         }.items()
     )
 
@@ -186,6 +192,7 @@ def generate_launch_description():
     return LaunchDescription([
         world_arg,
         rviz_arg,
+        odometry_source_arg,
         spawn_x_arg,
         spawn_y_arg,
         spawn_yaw_arg,
