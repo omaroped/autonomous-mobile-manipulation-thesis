@@ -381,7 +381,7 @@ class NavPickOrchestrator(Node):
         # also removes it from _remaining_boxes. Keeps ground-truth queries pointed at
         # the carried box. See _candidate_box_names().
         self._held_box_name = None
-        self._target_box_name = None   # latched by resolve_target_box() per attempt
+        self._target_box_name = None   # set by _verify_grasp_truth once a box is seen to rise
 
         # Which grasp mechanism is running — see the USE_WELD comment block at the top.
         # Must match what nav_pick.launch.py started; the launch file passes the same
@@ -1003,6 +1003,41 @@ class NavPickOrchestrator(Node):
             return None
         return x, y, z
 
+    def _all_box_world_z(self):
+        """World z of EVERY candidate box, as {name: z}.
+
+        Ground truth for the grasp check. Deliberately measures all of them rather
+        than picking one in advance, because "which box are we holding" is exactly
+        what the check is trying to establish, and every attempt to decide it up front
+        has been wrong:
+
+          - _candidate_box_names() returns the first name that resolves, which before
+            a grasp is claimed is just _remaining_boxes in order -- always
+            'stack_box_0'. With three boxes on the table and 'rightmost' targeting an
+            outer one, the check measured a box sitting untouched on the table and
+            reported "did not move" after a good lift, so the retry opened the fingers
+            and dropped the box.
+          - a second attempt identified it by proximity to gripper_tcp, but asked TF
+            for a 'world' frame that does not exist in this tree (map / odom /
+            base_footprint / base_link do). It failed on every call, logged a warning
+            nobody read, and silently changed nothing.
+
+        Comparing all of them sidesteps the question: whichever box actually rose is
+        the one in the gripper. No frame assumptions, no proximity threshold.
+        """
+        if not self._get_state.service_is_ready():
+            return {}
+        out = {}
+        for name in self._candidate_box_names():
+            req = GetEntityState.Request()
+            req.name = name
+            req.reference_frame = 'world'      # Gazebo's own frame, not TF
+            fut = self._get_state.call_async(req)
+            rclpy.spin_until_future_complete(self, fut, timeout_sec=2.0)
+            if fut.done() and fut.result() is not None and fut.result().success:
+                out[name] = fut.result().state.pose.position.z
+        return out
+
     def _box_world_z(self):
         """True box height in the Gazebo world frame — SIM GROUND TRUTH.
 
@@ -1109,68 +1144,6 @@ class NavPickOrchestrator(Node):
                 return fut.result().state.pose.position
         return None
 
-    def resolve_target_box(self, max_dist=0.12):
-        """Latch WHICH box the arm is about to grasp, by proximity to the gripper.
-
-        Called once the arm is at the grasp pose and before the fingers close, so the
-        nearest box to gripper_tcp is by definition the one being picked.
-
-        WHY THIS IS NEEDED. The ground-truth grasp check compares the target box's
-        world z before and after the lift. Which box that is came from
-        _candidate_box_names(), which returns the first name that RESOLVES -- and
-        before a grasp is claimed that list is just _remaining_boxes in order, so it
-        always answered 'stack_box_0'.
-
-        With one box on the table that was always right. With three it is right only
-        when box_0 happens to be the target. Measured 2026-08-25: the robot grasped
-        stack_box_1 three times in a row while the check measured stack_box_0, which
-        was sitting untouched on the table. The check therefore reported "box did not
-        move" after a perfectly good lift, the retry path opened the fingers, and the
-        box fell -- three times, then the cycle aborted.
-
-        _claim_held_box() cannot fill this role: it runs only AFTER a verified grasp,
-        which is exactly the step that was failing.
-        """
-        # Clear first: a failed resolve must not leave the PREVIOUS cycle's answer in
-        # place, or the stacking loop would verify level N against level N-1's box.
-        self._target_box_name = None
-
-        candidates = list(getattr(self, '_remaining_boxes', None) or [])
-        if not candidates or not self._get_state.service_is_ready():
-            return None
-        try:
-            tf = self._tf_buf.lookup_transform('world', TCP_LINK, rclpy.time.Time())
-            t = tf.transform.translation
-            tcp = (t.x, t.y, t.z)
-        except Exception as e:
-            self.get_logger().warn(f'resolve_target_box: no TCP transform ({e})')
-            return None
-
-        best_name, best_d = None, float('inf')
-        for name in candidates:
-            req = GetEntityState.Request()
-            req.name = name
-            req.reference_frame = 'world'
-            fut = self._get_state.call_async(req)
-            rclpy.spin_until_future_complete(self, fut, timeout_sec=2.0)
-            if not (fut.done() and fut.result() is not None and fut.result().success):
-                continue
-            p = fut.result().state.pose.position
-            d = math.dist((p.x, p.y, p.z), tcp)
-            if d < best_d:
-                best_name, best_d = name, d
-
-        if best_name is None or best_d > max_dist:
-            self.get_logger().warn(
-                f'resolve_target_box: nearest box is {best_d:.3f} m from the gripper '
-                f'(limit {max_dist:.2f}) — not latching a target')
-            return None
-        self._target_box_name = best_name
-        self.get_logger().info(
-            f'target box = {best_name} ({best_d*1000:.0f} mm from the gripper) — '
-            f'ground-truth checks will follow this box')
-        return best_name
-
     def _candidate_box_names(self):
         """Which Gazebo models the ground-truth helpers should query, best guess first.
 
@@ -1186,10 +1159,10 @@ class NavPickOrchestrator(Node):
         held = getattr(self, '_held_box_name', None)
         if held:
             names.append(held)
-        # The box the arm is about to grasp, latched by resolve_target_box() before
-        # the fingers close. Without this the list falls back to _remaining_boxes in
-        # order and every ground-truth check answers about the FIRST box on the table
-        # rather than the one being picked -- see resolve_target_box's docstring.
+        # The box _verify_grasp_truth() saw rise, i.e. the one actually in the
+        # gripper. Only known AFTER a lift, so it does not help the lift check itself
+        # -- that measures every box (see _all_box_world_z) -- but it keeps the
+        # centering measurement and the place step pointed at the right object.
         target = getattr(self, '_target_box_name', None)
         if target and target not in names:
             names.append(target)
@@ -1276,17 +1249,31 @@ class NavPickOrchestrator(Node):
         Returns True / False, or None if Gazebo state is unavailable (then the
         caller falls back to the vision check).
         """
-        if z_before is None:
+        if not z_before:
             return None
-        z_now = self._box_world_z()
-        if z_now is None:
+        z_after = self._all_box_world_z()
+        if not z_after:
             return None
-        rise = z_now - z_before
+
+        # Which box rose the most? That is the one in the gripper.
+        risen = {n: z_after[n] - z_before[n] for n in z_after if n in z_before}
+        if not risen:
+            return None
+        name = max(risen, key=risen.get)
+        rise = risen[name]
         ok = rise >= min_rise
+
+        others = ', '.join(f'{n}{risen[n]:+.3f}' for n in sorted(risen) if n != name)
         self.get_logger().info(
-            f'[verify] GROUND TRUTH: box world z {z_before:.3f} → {z_now:.3f} '
+            f'[verify] GROUND TRUTH: {name} z {z_before[name]:.3f} → {z_after[name]:.3f} '
             f'(rise {rise:+.3f} m, need ≥{min_rise:.3f}) → '
-            f'{"LIFTED (grasped)" if ok else "DID NOT MOVE (failed)"}')
+            f'{"LIFTED (grasped)" if ok else "DID NOT MOVE (failed)"}'
+            + (f'  [others: {others}]' if others else ''))
+
+        # Latch the winner so the centering measurement and the place step follow the
+        # box we are actually carrying.
+        if ok:
+            self._target_box_name = name
         return ok
 
     def _verify_grasp_vision(self, px, py, pz, tol=0.05, fresh_age=0.3, timeout=4.0):
@@ -2567,16 +2554,12 @@ class NavPickOrchestrator(Node):
                                                       f'grasp retry {attempt - 1}')):
                     break
 
-            # WHICH box are we about to grasp? Latch it now, while the arm is at the
-            # grasp pose and the fingers are still open, so every ground-truth check
-            # below follows the box actually being picked rather than whichever one
-            # happens to be first in _remaining_boxes. Must precede z_before, or the
-            # reference height is read from the wrong box too.
-            self.resolve_target_box()
-
-            # True box height BEFORE the close — the reference for the ground-truth
-            # lift check below.
-            z_before = self._box_world_z()
+            # Heights of ALL candidate boxes before the close. The check after the
+            # lift compares every one of them and takes whichever rose -- that is the
+            # box in the gripper. Measuring all of them is what makes the check
+            # immune to guessing the target wrong, which is how a good lift was
+            # previously reported as a failure (see _all_box_world_z's docstring).
+            z_before = self._all_box_world_z()
 
             result = self.close_until_contact()
 
