@@ -66,6 +66,7 @@ from lifecycle_msgs.msg import Transition
 
 from sensor_msgs.msg import JointState
 from tf2_ros import Buffer, TransformListener
+from tf2_geometry_msgs import do_transform_point
 
 
 class GraspResult:
@@ -847,6 +848,34 @@ class NavPickOrchestrator(Node):
 
     # ── Nav2 cmd_vel hand-off ─────────────────────────────────────────────────
 
+    def _target_map_x(self, base_x, base_y, label='target'):
+        """Map-frame x of a point given in base_link. Returns None if TF is unavailable.
+
+        This exists because reading the lateral offset straight off the target's
+        base_link y is only valid when the robot is already SQUARED to the target --
+        which is precisely what Phase B's docstring states, and precisely what is NOT
+        true at a Nav2 staging pose.
+
+        Measured 2026-08-26: at the place staging pose the tag read +384 mm of
+        "lateral offset". The tag is at map x = -4.01 and the staging pose at -4.00,
+        so the true offset was ~10 mm; the rest was Nav2's residual heading error
+        projected over the 1.5 m standoff (~15 deg gives ~0.39 m). Acting on it slid
+        the robot 384 mm the WRONG way, off the table's centre line.
+
+        Transforming through TF removes the problem at the root: the base_link -> map
+        transform already contains the robot's actual heading, so the resulting map x
+        is correct no matter how the robot is pointed.
+        """
+        try:
+            pt = PointStamped()
+            pt.header.frame_id = PLANNING_FRAME
+            pt.point.x, pt.point.y = float(base_x), float(base_y)
+            tf = self._tf_buf.lookup_transform('map', PLANNING_FRAME, rclpy.time.Time())
+            return do_transform_point(pt, tf).point.x
+        except Exception as e:
+            self.get_logger().warn(f'[realign] no map transform for {label} ({e})')
+            return None
+
     def _align_to_place_tag(self):
         """Slide sideways to face the place table's tag square-on, before docking.
 
@@ -875,10 +904,14 @@ class NavPickOrchestrator(Node):
             self.get_logger().info(
                 '[realign] tag not visible from the standoff — skipping alignment')
             return
-        # _read_tag_live returns (x, y, range, bearing, yaw) in base_link; y is the
-        # lateral offset, which is what the approach centre line needs corrected.
-        self._nav_place_x = self.realign_perpendicular(
-            t[1], self._nav_place_x, self._nav_place_y, self._nav_place_yaw,
+        # Use the tag's MAP x, not its base_link y. Reading the offset off base_link y
+        # is only valid once the heading is squared to the target -- which happens in
+        # Phase A, inside the dock, long after this runs. See _target_map_x.
+        map_x = self._target_map_x(t[0], t[1], label='place tag')
+        if map_x is None:
+            return
+        self._nav_place_x = self.realign_perpendicular_to(
+            map_x, self._nav_place_x, self._nav_place_y, self._nav_place_yaw,
             label='place tag')
 
     def _align_to_target_box(self):
@@ -900,12 +933,18 @@ class NavPickOrchestrator(Node):
             self.get_logger().info(
                 '[realign] no box reading at the staging pose — skipping alignment')
             return
-        self._nav_goal_x = self.realign_perpendicular(
-            b[1], self._nav_goal_x, self._nav_goal_y, self._nav_goal_yaw,
+        # Map x, not base_link y -- same reasoning as the place side (_target_map_x).
+        # The pickup happened to work because Nav2 leaves little heading error at that
+        # staging pose, but it was correct by luck rather than by construction.
+        map_x = self._target_map_x(b[0], b[1], label='target box')
+        if map_x is None:
+            return
+        self._nav_goal_x = self.realign_perpendicular_to(
+            map_x, self._nav_goal_x, self._nav_goal_y, self._nav_goal_yaw,
             label='target box')
 
-    def realign_perpendicular(self, target_base_y, goal_x, goal_y, goal_yaw,
-                              label='target', tolerance=0.02, timeout=60.0):
+    def realign_perpendicular_to(self, target_map_x, goal_x, goal_y, goal_yaw,
+                                 label='target', tolerance=0.02, timeout=60.0):
         """Slide sideways via Nav2 so the approach stays PERPENDICULAR to the table.
 
         THE PROBLEM THIS SOLVES. visual_docking()'s Phase A rotates in place until the
@@ -929,20 +968,27 @@ class NavPickOrchestrator(Node):
         base can make, and it has been observed timing out. Nav2 already solves
         "get to this pose" properly.
 
-        target_base_y is the target's lateral offset in base_link (positive = left).
-        Both tables are approached at yaw = -pi/2, where base_link +Y maps to map +X,
-        so the correction is applied directly to the goal's x.
+        target_map_x is the target's x in the MAP frame -- an absolute position, not
+        an offset. Both tables are approached along -Y, so lining the staging pose's x
+        up with the target's x is what makes the approach perpendicular.
+
+        Takes map x rather than a base_link offset because a base_link reading is only
+        the lateral offset once the robot is squared to the target, which it is not at
+        a Nav2 staging pose. Passing the raw base_link y here previously produced a
+        384 mm "offset" that was almost entirely Nav2's residual heading error, and
+        slid the robot that far the wrong way. See _target_map_x.
         """
-        if abs(target_base_y) <= tolerance:
+        delta = target_map_x - goal_x
+        if abs(delta) <= tolerance:
             self.get_logger().info(
-                f'[realign] {label} is {target_base_y*1000:+.0f} mm off centre — '
+                f'[realign] {label} is {delta*1000:+.0f} mm off centre — '
                 f'within {tolerance*1000:.0f} mm, approach is already perpendicular')
             return goal_x
 
-        new_x = goal_x + target_base_y
+        new_x = target_map_x
         self.get_logger().info(
-            f'[realign] {label} is {target_base_y*1000:+.0f} mm off the approach centre '
-            f'line. Sliding the staging pose {new_x - goal_x:+.3f} m in map x '
+            f'[realign] {label} is at map x {target_map_x:.3f}, {delta*1000:+.0f} mm off '
+            f'the approach centre line. Sliding the staging pose {delta:+.3f} m '
             f'({goal_x:.3f} -> {new_x:.3f}) so the approach stays perpendicular '
             f'instead of diagonal.')
 
@@ -3162,11 +3208,39 @@ class NavPickOrchestrator(Node):
                 f'±{PLACE_MAX_LATERAL:.3f} m — clamped to {clamped_y:+.3f}. The dock '
                 f'is off the table centre line (Phase B centring likely timed out); '
                 f'the box will land off-centre but within reach.')
-        self._latched_drop    = (raw_x - PLACE_NEAR_EDGE_BIAS, clamped_y)
+        # The bias pulls the drop toward the robot to keep it off the OUTER edge of
+        # the reach band -- but the band has an INNER edge too, and subtracting
+        # unconditionally can push the target straight through it.
+        #
+        # That is exactly what happened on 2026-08-26: the tag put the drop at
+        # x = 0.243, comfortably inside the measured band [0.22, 0.24] at place
+        # height, and the flat -30 mm bias moved it to 0.213 -- below the inner edge.
+        # The arm cannot fold tightly enough to reach straight down that close to its
+        # own base, so IK returned -31 (no solution) three times, the Cartesian
+        # fallback was rejected at 69 rad/m, and the retract then self-collided
+        # (base_link <-> gripper_left1) on all three attempts. The arm was left down
+        # over the table, and backing up swept the placed box onto the floor.
+        #
+        # So clamp into the band instead of subtracting blindly. PLACE_MIN_X is the
+        # innermost column reach_map.csv actually reports reachable at place height;
+        # the bias may pull the target inward, but never past it.
+        PLACE_MIN_X = 0.22   # measured inner reachable column at z = -0.025
+        biased_x = raw_x - PLACE_NEAR_EDGE_BIAS
+        final_x  = max(PLACE_MIN_X, biased_x)
+        if final_x > biased_x + 1e-6:
+            self.get_logger().warn(
+                f'Phase D: {PLACE_NEAR_EDGE_BIAS*1000:.0f} mm bias would put the drop '
+                f'at x={biased_x:.3f}, inside the arm\'s inner reach limit '
+                f'({PLACE_MIN_X:.3f}) — clamped to {final_x:.3f}. Applying the full '
+                f'bias here would make the pose unreachable and leave the arm unable '
+                f'to retract.')
+
+        self._latched_drop    = (final_x, clamped_y)
         self.get_logger().info(
             f'Phase D drop biased {PLACE_NEAR_EDGE_BIAS*1000:.0f} mm inward: '
             f'({raw_x:.3f}, {raw_y:+.3f}) -> '
-            f'({self._latched_drop[0]:.3f}, {self._latched_drop[1]:+.3f})')
+            f'({self._latched_drop[0]:.3f}, {self._latched_drop[1]:+.3f})  '
+            f'[band {PLACE_MIN_X:.2f}..0.24]')
         self._latched_tag_yaw = t[4] + yaw_offset    # tag yaw + calibration offset
         self.get_logger().info(
             f'Phase D latched: drop=({self._latched_drop[0]:.3f},{self._latched_drop[1]:.3f}) '
