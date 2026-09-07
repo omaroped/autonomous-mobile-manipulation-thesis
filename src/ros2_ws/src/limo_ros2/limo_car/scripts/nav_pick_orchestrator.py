@@ -57,11 +57,18 @@ from moveit_msgs.msg import (
     CollisionObject, PlanningScene,
 )
 from shape_msgs.msg import SolidPrimitive
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+from control_msgs.action import FollowJointTrajectory
 
-from gazebo_msgs.srv import GetEntityState, SetEntityState
-from gazebo_msgs.msg import EntityState
+try:
+    from gazebo_msgs.srv import GetEntityState, SetEntityState
+    from gazebo_msgs.msg import EntityState
+    HAS_GAZEBO = True
+except ImportError:
+    GetEntityState, SetEntityState, EntityState = None, None, None
+    HAS_GAZEBO = False
 
-from lifecycle_msgs.srv import ChangeState
+from lifecycle_msgs.srv import ChangeState, GetState
 from lifecycle_msgs.msg import Transition
 
 from sensor_msgs.msg import JointState
@@ -163,13 +170,9 @@ ARM_GROUP      = 'arm'
 ARM_JOINTS = ['joint2_to_joint1', 'joint3_to_joint2', 'joint4_to_joint3',
               'joint5_to_joint4', 'joint6_to_joint5', 'joint6output_to_joint6']
 NAMED_STATES = {
-    'home':   [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-    'ready':  [0.0, -0.5, -0.6, 1.1, 0.0, 0.0],
-    # Travel pose: joint2 tilts arm forward, joint3+4 fold it DOWN so the arm's
-    # centre of mass is low and close to the body. This minimises the pendulum
-    # torque on joint2 (horizontal-axis hinge) during navigation, stopping the
-    # vibration that occurs when the arm is straight up (home = worst case).
-    'travel': [0.0,  1.2, -0.6, -0.6, 0.0, 0.0],
+    'home':   [-1.5708,  0.0,  0.0,  0.0,  0.0,  0.0],
+    'ready':  [-1.5708, -0.5, -0.6,  1.1,  0.0, -1.5708],
+    'travel': [-1.5708,  0.4, -0.5, -0.5,  0.0,  0.0],
 }
 
 # ── Grasp geometry (calibrated, from arm_grasp_test) ─────────────────────────
@@ -197,7 +200,42 @@ STACK_Y_DEFAULT  = -0.12               # base_link y — offset to the side of t
 STACK_SURFACE_Z  =  0.06               # base_link z of the foundation surface top (table top)
 STACK_HOVER      =  0.10               # TCP hover above the current stack top before placing
 # FALLBACK ONLY -- live value is self._stop_distance, from config/scene.yaml.
-STOP_DISTANCE    =  0.24               # box distance from base_link at the pickup dock (arm reach limit)
+ODOM_SCALE_DEFAULT = 1.0
+# Odometry distance-scale correction: true distance = odometry x ODOM_SCALE.
+#
+# 1.0 IS CORRECT FOR SIMULATION and must stay the default. Gazebo's diff_drive runs
+# with odometry_source=WORLD, so simulated odometry IS ground truth and any scaling
+# here would inject an error that does not exist.
+#
+# THE PHYSICAL ROBOT NEEDS 0.950. Measured 2026-08-27 with odom_drive_probe.py, ten
+# runs over two distances, tape-measured against floor marks:
+#     commanded 0.30 m x5 -> odometry 1.506 m, tape 1.585 m -> scale 1.0525
+#     commanded 0.60 m x5 -> odometry 3.004 m, tape 3.162 m -> scale 1.0526
+# The two agree to 0.01%, and the error DOUBLED with distance -- so it is a scale
+# error, not stop-latency coasting (which would have stayed constant).
+#
+# Cause: the robot runs rubber TRACKS over its wheels. The track's outer surface is
+# what touches the floor, roughly 2.4 mm further out than the bare wheel rim the base
+# FIRMWARE assumes -- and the firmware reports velocity already converted to m/s over
+# serial (limo_driver.cpp:246), so there is no wheel radius in ROS to correct. The
+# simulation models bare wheels (ackermann.xacro wheel_radius = 0.045), which is why
+# this gap exists at all.
+#
+# Why it matters: the pickup dock drives OPEN-LOOP on odometry, and at STOP_DISTANCE
+# 0.22 the cube's near face clears the bumper by only 18 mm. Uncorrected, the robot
+# overshoots ~16 mm at the dock's ~0.3 m approach and arrives ~2 mm from the cube.
+# Nav2/AMCL are unaffected -- lidar corrects them; this open-loop drive has nothing to
+# correct it.
+#
+# Set on hardware with:  ros2 param set /nav_pick_orchestrator odom_scale 0.950
+# STRAIGHT-LINE ONLY. Tracks skid when they rotate, so this says nothing about turning.
+
+STOP_DISTANCE    =  0.22               # box distance from base_link at the pickup dock
+# 0.22, not 0.20. Raised 2026-08-27 after the hardware dock was set to 0.20: with
+# bumper_x = 0.189 and a 25 mm cube, a 0.20 m box centre puts the cube's NEAR FACE at
+# 0.188 m -- 2 mm BEHIND the bumper. The robot cannot reach that stop point without
+# driving through the cube. 0.22 leaves +18 mm and matches what nav_pick.launch.py
+# computes for the sim (reach 0.24 - box_offset 0.02), so sim and hardware dock alike.
 # Where the FINAL camera reading is taken, before the last short blind hop to the dock.
 # Chosen from geometry + observation: with the 0.14 m pickup table the WHOLE box is inside
 # the camera's vertical field of view down to 0.266 m (camera is 0.065 m up, looking level,
@@ -340,6 +378,7 @@ class NavPickOrchestrator(Node):
         # Single-solve IK, used by go_pose_branch() for the near-boundary descend/lift.
         self._ik    = self.create_client(GetPositionIK, '/compute_ik')
         self._exec  = ActionClient(self, ExecuteTrajectory, '/execute_trajectory')
+        self._follow_joint = ActionClient(self, FollowJointTrajectory, '/mycobot_arm_controller/follow_joint_trajectory')
         self._scene = self.create_client(ApplyPlanningScene, '/apply_planning_scene')
 
         # Gripper
@@ -480,6 +519,9 @@ class NavPickOrchestrator(Node):
         self.declare_parameter('nav_goal_y',         NAV_GOAL_Y)
         self.declare_parameter('nav_goal_yaw',       NAV_GOAL_YAW)
         self.declare_parameter('stop_distance',      STOP_DISTANCE)
+        # 1.0 in sim (odometry is ground truth); 0.950 on the physical robot.
+        # See ODOM_SCALE_DEFAULT for the measurement this comes from.
+        self.declare_parameter('odom_scale',         ODOM_SCALE_DEFAULT)
         # base_link-frame table surface heights, derived in nav_pick.launch.py
         # from config/scene.yaml (world top_z - robot.base_link_ground_z).
         # place_surface_base_z is the SOURCE OF TRUTH for place_box(): there is
@@ -519,6 +561,7 @@ class NavPickOrchestrator(Node):
             f'stop_distance={self._stop_distance:.3f} '
             f'place_surface_base_z={self._place_surface_base_z:+.4f}')
         self.declare_parameter('place_stack_levels', 1)                 # boxes to stack at place table
+        self.declare_parameter('skip_nav', False)                       # skip global Nav2 to start directly with docking
         # How far to pull the place drop point toward the robot, from the tag-derived
         # table centre. Live-tunable so it can be matched to the measured band without
         # a rebuild:  ros2 param set /nav_pick_orchestrator place_near_edge_bias 0.04
@@ -540,6 +583,16 @@ class NavPickOrchestrator(Node):
         self._latched_drop     = None   # (x, y) latched at Phase D
         self._latched_tag_yaw  = None   # tag yaw (rad) latched for arm orientation
 
+        # Measured stack-top height (2026-09-07). Set right after backing away from
+        # placing a box (camera is now past its blind zone, gripper is empty, nothing
+        # else could be mistaken for it -- see the "after" reading in the fetch-next-box
+        # block). Consumed and averaged with a second "before" reading taken right
+        # before the NEXT placement, in place_box(). Two independent looks at the same
+        # physical box, from two different robot poses, average out sensor noise the
+        # way a single reading can't -- same reasoning as get_box_xyz()'s own
+        # median-of-N-samples, just across time instead of within one dwell.
+        self._pending_stack_top_reading = None   # float or None
+
         # TF buffer — used by the map-position fallback dock when tag detection fails
         self._tf_buf      = Buffer()
         self._tf_listener = TransformListener(self._tf_buf, self)
@@ -550,8 +603,8 @@ class NavPickOrchestrator(Node):
         self._cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
 
         # base_pin (Gazebo services)
-        self._get_state = self.create_client(GetEntityState, '/get_entity_state')
-        self._set_state = self.create_client(SetEntityState, '/set_entity_state')
+        self._get_state = self.create_client(GetEntityState, '/get_entity_state') if HAS_GAZEBO else None
+        self._set_state = self.create_client(SetEntityState, '/set_entity_state') if HAS_GAZEBO else None
         self._pin_pose  = None
         self._pin_timer = None
 
@@ -688,10 +741,11 @@ class NavPickOrchestrator(Node):
             return
         csv_path = self.get_parameter('metrics_csv').value
         if not csv_path:
-            data_dir = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)),
-                '..', '..', '..', '..', '..', 'data')
-            os.makedirs(data_dir, exist_ok=True)
+            try:
+                data_dir = os.path.expanduser('~/thesis_ws/src/data')
+                os.makedirs(data_dir, exist_ok=True)
+            except Exception:
+                data_dir = '/tmp'
             ts = time.strftime('%Y%m%d_%H%M%S')
             csv_path = os.path.join(data_dir, f'metrics_{ts}.csv')
         fieldnames = list(self._metrics[0].keys())
@@ -703,10 +757,11 @@ class NavPickOrchestrator(Node):
 
     def _grasp_attempts_csv_path(self):
         if not hasattr(self, '_grasp_csv_path'):
-            data_dir = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)),
-                '..', '..', '..', '..', '..', 'data')
-            os.makedirs(data_dir, exist_ok=True)
+            try:
+                data_dir = os.path.expanduser('~/thesis_ws/src/data')
+                os.makedirs(data_dir, exist_ok=True)
+            except Exception:
+                data_dir = '/tmp'
             ts = time.strftime('%Y%m%d_%H%M%S')
             self._grasp_csv_path = os.path.join(data_dir, f'grasp_attempts_{ts}.csv')
         return self._grasp_csv_path
@@ -768,6 +823,22 @@ class NavPickOrchestrator(Node):
 
     # ── Step 1: Navigate ──────────────────────────────────────────────────────
 
+    def _lifecycle_state(self, node):
+        """Query a lifecycle node's CURRENT state label directly, rather than
+        trusting a change_state call's fire-and-forget result. Diagnostic only
+        (2026-09-07): added to trace exactly what state controller_server/
+        behavior_server are actually in across repeated dock/undock cycles --
+        _activate_nav2_cmdvel() never checked whether its transition requests
+        actually succeeded, and a prior run logged one failing silently
+        ("Unable to start transition 3 from current state active")."""
+        cli = self.create_client(GetState, f'/{node}/get_state')
+        if not cli.wait_for_service(timeout_sec=2.0):
+            return '<service unavailable>'
+        fut = cli.call_async(GetState.Request())
+        rclpy.spin_until_future_complete(self, fut, timeout_sec=3.0)
+        res = fut.result()
+        return res.current_state.label if res is not None else '<no response>'
+
     def _activate_nav2_cmdvel(self):
         """Re-activate the Nav2 cmd_vel nodes (in case a previous mission
         deactivated them for docking) so navigation can drive again."""
@@ -776,13 +847,20 @@ class NavPickOrchestrator(Node):
         # nav2_limo.launch.py). collision_monitor in particular never existed, which
         # is why every run logged "collision_monitor/change_state unavailable".
         for node in ('controller_server', 'behavior_server'):
+            before = self._lifecycle_state(node)
             cli = self.create_client(ChangeState, f'/{node}/change_state')
             if not cli.wait_for_service(timeout_sec=3.0):
+                self.get_logger().warn(f'[lifecycle] {node}/change_state unavailable — skipping (was {before})')
                 continue
             req = ChangeState.Request()
             req.transition.id = Transition.TRANSITION_ACTIVATE
             fut = cli.call_async(req)
             rclpy.spin_until_future_complete(self, fut, timeout_sec=5.0)
+            res = fut.result()
+            after = self._lifecycle_state(node)
+            self.get_logger().info(
+                f'[lifecycle] activate {node}: {before} -> {after} '
+                f'(change_state accepted={getattr(res, "success", None)})')
 
     def navigate_to_table(self):
         self.get_logger().info('=== Step 1: Navigate to table ===')
@@ -1036,15 +1114,20 @@ class NavPickOrchestrator(Node):
         ("collision_monitor/change_state unavailable — skipping").
         """
         for node in ('controller_server', 'behavior_server'):
+            before = self._lifecycle_state(node)
             cli = self.create_client(ChangeState, f'/{node}/change_state')
             if not cli.wait_for_service(timeout_sec=3.0):
-                self.get_logger().warn(f'{node}/change_state unavailable — skipping')
+                self.get_logger().warn(f'[lifecycle] {node}/change_state unavailable — skipping (was {before})')
                 continue
             req = ChangeState.Request()
             req.transition.id = Transition.TRANSITION_DEACTIVATE
             fut = cli.call_async(req)
             rclpy.spin_until_future_complete(self, fut, timeout_sec=5.0)
-            self.get_logger().info(f'deactivated {node} (released /cmd_vel)')
+            res = fut.result()
+            after = self._lifecycle_state(node)
+            self.get_logger().info(
+                f'[lifecycle] deactivate {node}: {before} -> {after} '
+                f'(change_state accepted={getattr(res, "success", None)}) (released /cmd_vel)')
 
     # ── Step 1.5: Visual docking ──────────────────────────────────────────────
 
@@ -1419,6 +1502,13 @@ class NavPickOrchestrator(Node):
         drive = max(0.0, drive - STOP_MARGIN)
         if drive <= 0.001:
             return 0.0
+        # Convert the REAL distance we want into the ODOMETRY distance that corresponds
+        # to it. Odometry under-reports by ~5% on tracks, so asking odometry for the raw
+        # figure drives the robot that much too far -- straight into the table, given the
+        # dock's 18 mm clearance. See ODOM_SCALE_DEFAULT.
+        odom_scale = float(self.get_parameter('odom_scale').value)
+        if odom_scale > 0.0:
+            drive = drive * odom_scale
         for _ in range(20):
             rclpy.spin_once(self, timeout_sec=0.05)
             if self._odom is not None:
@@ -1453,6 +1543,115 @@ class NavPickOrchestrator(Node):
         final = self._odom_dist_since(ox, oy)
         return 0.0 if final is None else float(final)
 
+    def _drive_forward_corrected(self, drive, d_start, timeout=25.0):
+        """Like _drive_forward, but steers on the LIVE box position while advancing,
+        instead of committing to a single heading and driving it open-loop.
+
+        WHY THIS EXISTS. _drive_forward only ever commands linear.x -- angular.z is
+        never set, so it is a pure straight-line odometry drive with NO heading
+        correction once it starts. Whatever aim error Phase A left (or that crept in
+        after it) is carried, uncorrected, across the entire distance. Reported
+        2026-09-06: watched directly in Gazebo, the base rotated once, then drove the
+        rest of the way with "no rotation at all"; over the ~0.68 m this stage
+        actually drove that run, an ~9 degree residual heading error is enough on its
+        own to produce the observed 10.5 cm miss (0.68 * sin(9 deg) =~ 0.106 m) --
+        matching the failure exactly. A previous single-shot fix (rotate once to a
+        fixed known table yaw before Phase A) was reverted: it doesn't generalise
+        past this one simulated world, and doesn't address the real defect, which is
+        that NOTHING corrects heading DURING the drive, no matter how good the start
+        was.
+
+        Correction only runs here, not in _drive_forward itself, because part of this
+        approach is genuinely blind: inside ~0.27 m the box exits reliable camera
+        range (the documented near-field limit), so there is nothing to correct
+        against there and that stretch must stay open-loop. This method is for the
+        stretch where the box IS still visible.
+
+        Uses the SAME gain/floor Phase A already uses (K_ROT, MAX_ROT, MIN_ROT,
+        Y_TOL) rather than new, untuned constants -- proportional control on the
+        live lateral error naturally corrects hard when far and gently when close,
+        which is the "coarser far away, finer up close" behaviour asked for.
+        """
+        K_ROT, MAX_ROT, MIN_ROT, Y_TOL = 1.8, 0.5, 0.25, 0.03
+
+        STOP_MARGIN = 0.005
+        drive = max(0.0, drive - STOP_MARGIN)
+        if drive <= 0.001:
+            return 0.0
+        odom_scale = float(self.get_parameter('odom_scale').value)
+        if odom_scale > 0.0:
+            drive = drive * odom_scale
+        for _ in range(20):
+            rclpy.spin_once(self, timeout_sec=0.05)
+            if self._odom is not None:
+                break
+        ox, oy = self._odom if self._odom is not None else (0.0, 0.0)
+
+        last_y = None
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            rclpy.spin_once(self, timeout_sec=0.02)
+            disp = self._odom_dist_since(ox, oy)
+            disp = 0.0 if disp is None else disp
+            remaining = drive - disp
+            if remaining <= 0.0:
+                self.get_logger().info(f'stop — {d_start - drive:.3f} m from the box')
+                break
+
+            # Read the ALREADY-cached box pose directly, rather than calling
+            # _read_box_live(). That helper does its own rclpy.spin_once(0.05) --
+            # a SECOND blocking spin on top of the one this loop already does
+            # every tick, and spin_once blocks for the FULL timeout if nothing is
+            # immediately ready. Nearly doubling the loop's worst-case cadence is
+            # exactly the kind of thing that starves how often a Twist actually
+            # reaches the robot. This loop's own spin_once above already services
+            # the subscription that fills self._latest_box, so re-spinning here
+            # buys nothing and only adds latency.
+            p = self._latest_box
+            w = 0.0
+            if p is not None and p.header.frame_id == PLANNING_FRAME:
+                bx, by = p.pose.position.x, p.pose.position.y
+                if 0.10 <= bx <= 1.5:
+                    last_y = by
+                    # PURE proportional, no deadband and no MIN_ROT floor -- both
+                    # were copied from Phase A, where they belong: Y_TOL there is a
+                    # "have I finished rotating, can I stop" test, and MIN_ROT stops
+                    # a STATIONARY rotation from crawling forever as it converges.
+                    # Neither idea is right for a corrector that is meant to run
+                    # continuously while the base is already moving. Gating on
+                    # Y_TOL here means "only correct once the error is already >=
+                    # 3 cm" -- so as long as Phase A leaves anything smaller than
+                    # that (it usually does), this correction never fires even
+                    # once, for the entire drive. Confirmed directly: the run
+                    # logged lateral=+0.013...+0.011 the whole way, every one of
+                    # those under the 0.03 Y_TOL, so w stayed 0.0 for all of Stage
+                    # 1 -- observed live as "one rotation, then never again."
+                    # Small error should give a small, continuously-applied
+                    # correction, not zero.
+                    w = max(-MAX_ROT, min(MAX_ROT, K_ROT * last_y))
+            # No usable reading: a momentary perception gap. Keep driving forward
+            # with no steering this tick rather than stopping -- matches Phase A's
+            # own tolerance for brief dropouts, without aborting forward progress
+            # that Phase A does not have to protect (the base is already moving
+            # here).
+
+            self.get_logger().info(
+                f'approach: driven {disp:.3f}/{drive:.3f} m  (box ≈ {d_start - disp:.3f} m, '
+                f'lateral={"n/a" if last_y is None else f"{last_y:+.3f}"})',
+                throttle_duration_sec=0.5)
+            t = Twist()
+            t.linear.x = max(0.06, min(0.14, 0.6 * remaining))
+            t.angular.z = w
+            self._cmd_vel_pub.publish(t)
+            time.sleep(0.05)
+        else:
+            self.get_logger().warn('approach timed out — stopping')
+
+        self._cmd_vel_pub.publish(Twist())
+        time.sleep(0.5)
+        final = self._odom_dist_since(ox, oy)
+        return 0.0 if final is None else float(final)
+
     def visual_docking(self):
         """MECHANISM 1 — land, align, then approach (differential drive).
 
@@ -1470,6 +1669,14 @@ class NavPickOrchestrator(Node):
         # Hand /cmd_vel over from Nav2 to us, or the dock crawls/stalls.
         self._silence_nav2_cmdvel()
 
+        # A single rotate-to-a-fixed-known-yaw step was tried here (2026-09-06) and
+        # removed: it only worked because THIS world's table happens to sit at a
+        # fixed, hardcoded angle, which does not generalise past one simulated
+        # layout and does not transfer to hardware. The actual defect it was
+        # papering over is fixed properly below: _drive_forward_corrected() keeps
+        # steering on the live box position for as long as the box stays visible,
+        # rather than committing to one heading (however it was obtained) and
+        # driving it open-loop.
         TARGET_X = 0.28     # final grasp distance from base_link
         X_TOL    = 0.02     # forward tolerance
         Y_TOL    = 0.03     # lateral-centre tolerance
@@ -1555,8 +1762,9 @@ class NavPickOrchestrator(Node):
         stage1 = max(0.0, d0 - FINAL_READ_DIST)
         self.get_logger().info(
             f'Phase B stage 1: box at {d0:.3f} m → driving {stage1:.3f} m to the final '
-            f'reading point at {FINAL_READ_DIST:.2f} m')
-        self._drive_forward(stage1, d0)
+            f'reading point at {FINAL_READ_DIST:.2f} m (heading-corrected — the box is '
+            f'still visible for this whole stretch)')
+        self._drive_forward_corrected(stage1, d0)
 
         # ── STAGE 2: the final, best reading ────────────────────────────────
         final = self.get_box_xyz(samples=6, timeout=6.0)
@@ -1661,6 +1869,9 @@ class NavPickOrchestrator(Node):
     def pin_base(self):
         """Capture current robot world pose and hold it at 50 Hz."""
         self.get_logger().info('=== Step 2: Pinning base ===')
+        if not HAS_GAZEBO or self._get_state is None:
+            self.get_logger().info('real hardware mode — physical chassis stationary, skipping pin')
+            return True
         if not self._base_pin_enabled:
             self.get_logger().info('base_pin_enabled=false — skipping pin')
             return False
@@ -1987,6 +2198,14 @@ class NavPickOrchestrator(Node):
 
     @staticmethod
     def _joint_constraints(values, tol=0.01):
+        # 0.01, not 0.15. A 2026-08-01 log entry root-caused a loosened tolerance
+        # here to intermittent table-crushing: a wider MoveIt goal band lets the
+        # planner accept a pose that's still 0.15 rad off, which at the wrist is
+        # enough travel to drive the gripper into the table. Neither of this
+        # function's two call sites (go_named, and the general joint-solution path)
+        # passes tol explicitly, so both were silently loosened when the default
+        # changed. Tightened back; a hardware call site that genuinely needs more
+        # slack should pass tol= explicitly rather than reopening this for sim.
         c = Constraints()
         for name, val in zip(ARM_JOINTS, values):
             jc = JointConstraint()
@@ -2087,7 +2306,48 @@ class NavPickOrchestrator(Node):
         return False
 
     def go_named(self, name):
+        if name not in NAMED_STATES:
+            return False
+        self.get_logger().info(f'[{name}] moving to named pose...')
+        if not HAS_GAZEBO:
+            if self._follow_joint.wait_for_server(timeout_sec=3.0):
+                goal = FollowJointTrajectory.Goal()
+                goal.trajectory.joint_names = list(ARM_JOINTS)
+                pt = JointTrajectoryPoint()
+                pt.positions = [float(v) for v in NAMED_STATES[name]]
+                pt.time_from_start.sec = 2
+                goal.trajectory.points = [pt]
+                send_fut = self._follow_joint.send_goal_async(goal)
+                rclpy.spin_until_future_complete(self, send_fut, timeout_sec=5.0)
+                gh = send_fut.result() if send_fut.done() else None
+                if gh and gh.accepted:
+                    res_fut = gh.get_result_async()
+                    rclpy.spin_until_future_complete(self, res_fut, timeout_sec=5.0)
+                    self.get_logger().info(f'[{name}] OK ✓')
+                    return True
         return self._send(self._joint_constraints(NAMED_STATES[name]), name)
+
+    def _go_named_safe(self, name):
+        """go_named(), but its result is actually checked (2026-09-07).
+
+        Every call site in this file that folds the arm before driving
+        (`go_named('travel')`, 5 places) discarded the return value -- if the
+        motion silently failed, the base still unpinned and drove away with
+        the arm wherever it was left. Directly observed: after a place, the
+        retract-then-home sequence failed, the arm was still down at the box,
+        and backing away dragged the open gripper straight through it,
+        knocking the box off the table. One retry here, loudly logged either
+        way, closes that gap at every call site rather than just the one that
+        happened to be caught."""
+        if self.go_named(name):
+            return True
+        self.get_logger().warn(f'[{name}] first attempt failed — retrying once before driving')
+        if self.go_named(name):
+            return True
+        self.get_logger().error(
+            f'[{name}] FAILED after retry — proceeding anyway, but the arm may not '
+            f'be clear. This is exactly the condition that drags a placed/held box.')
+        return False
 
     def go_pose(self, x, y, z, q, label):
         self.get_logger().info(f'[{label}] planning…')
@@ -2452,8 +2712,57 @@ class NavPickOrchestrator(Node):
             f'[{label}] STRAIGHT {"OK" if ok else "FAILED"} ({frac * 100:.0f}% interpolated)')
         return ok
 
+    def descend_until_resistance(self, x, y, q, z_start, z_floor, label,
+                                  step=0.004, settle=0.15):
+        """Lower the TCP a few mm at a time until a step genuinely fails to
+        execute, or z_floor is reached — whichever comes first.
+
+        Added 2026-09-08, replacing "compute a target height, release there".
+        That trusted a single estimated number as the release point: when the
+        estimate was a little high the box fell the remaining gap instead of
+        landing gently (observed directly — a box "thrown from height"
+        instead of set down), and when it was wrong by more it missed the
+        table outright. This never trusts a computed height as the stopping
+        point. It keeps commanding the arm slightly deeper, one small step at
+        a time; the moment a step does not actually complete, that IS
+        physical contact — Gazebo's physics really stopped the arm, the
+        controller could not reach the commanded joint state, and _send()
+        reports failure. z_floor is a safety backstop only, in case contact
+        is never felt for some reason — it is not the intended stopping
+        mechanism, and hitting it is logged as degraded, not normal.
+
+        Applies at every level, including level 0 against the bare table —
+        the same "descend until you actually feel it, don't guess" idea.
+
+        Returns the z the arm actually reached (its last confirmed step).
+        """
+        z = z_start
+        while z > z_floor:
+            z_next = max(z_floor, z - step)
+            sol = self.solve_ik_seeded(x, y, z_next, q, f'{label} feel',
+                                       timeout=0.5, quiet=True)
+            if sol is None:
+                self.get_logger().info(
+                    f'[{label}] no IK past z={z:.4f} — stopping (reach limit, '
+                    f'treated the same as contact)')
+                break
+            if not self._send(self._joint_constraints(sol), f'{label} feel'):
+                self.get_logger().info(
+                    f'[{label}] step to z={z_next:.4f} did not complete — '
+                    f'that is contact. Stopping at z={z:.4f}')
+                break
+            z = z_next
+            self._spin_for(settle)
+        else:
+            self.get_logger().warn(
+                f'[{label}] reached safety floor z={z_floor:.4f} without ever '
+                f'feeling contact — releasing here anyway')
+        return z
+
     def add_table(self, bx, by, bz):
-        """Register the pickup table as a MoveIt collision object."""
+        """Register the pickup table as a MoveIt collision object (simulation only)."""
+        if not HAS_GAZEBO:
+            return
         table_top = bz - BOX_HALF_H
         co = CollisionObject()
         co.header.frame_id = PLANNING_FRAME
@@ -2476,6 +2785,8 @@ class NavPickOrchestrator(Node):
             self.get_logger().info(f'added table collision @ z={pose.position.z:.3f}')
 
     def remove_table(self):
+        if not HAS_GAZEBO:
+            return
         co = CollisionObject()
         co.header.frame_id = PLANNING_FRAME
         co.id = 'pickup_table'
@@ -2487,99 +2798,81 @@ class NavPickOrchestrator(Node):
             rclpy.spin_until_future_complete(self, fut)
             self.get_logger().info('removed table collision → retreat can plan freely')
 
-    # ── Step 4–5: Grasp + Retract ─────────────────────────────────────────────
-
     def grasp_and_retract(self, bx, by, bz):
-        """MECHANISM 2 — iterative top-down grasp.
-
-        Instead of a single 1 cm descent, we:
-          1. go to a HOVER point well above the box (top-down),
-          2. re-perceive (median → kills the frame-to-frame drift), re-centre the
-             target, and only descend once the estimate is STABLE,
-          3. descend straight down to the calibrated grasp height, weld, close,
-             lift, retract.
-
-        Note: the depth camera is base-mounted (not on the wrist). Hovering the arm
-        can occlude the box, so re-perception may return nothing — in that case we
-        gracefully keep the (median-filtered) estimate from Step 3 and descend,
-        i.e. at worst this equals the old behaviour, at best it's more precise.
-        A wrist camera would make this a true eye-in-hand loop (sim-to-real note).
-        """
         self.get_logger().info('=== Steps 4–5: Iterative top-down grasp ===')
         q = TOPDOWN_QUAT
-        # Clearance above the box before descending, and the height the lift returns to.
-        # REDUCED 0.12 -> 0.06 on 2026-08-02. The wrist+gripper stack is 213 mm long and
-        # must hang straight down from the elbow, so every centimetre of clearance forces
-        # the elbow higher — and with the pickup table raised to 0.14 m the elbow runs out
-        # of room. Measured: 0.12 makes the hover pose unplannable at the 0.24 m dock
-        # ("[hover] FAILED"), while 0.06 plans fine and still clears the table.
-        # Reduced 0.06 -> 0.03 on 2026-08-21. Hover radius is what puts the START of the
-        # descend on the workspace boundary: r = sqrt(x^2 + z^2), and with x pinned at
-        # 0.240 m by the dock geometry, the hover height is the ONLY term still free.
-        #   0.060 m hover -> r = sqrt(0.240^2 + 0.075^2) = 0.2514 m = 99.4% of max reach
-        #   0.030 m hover -> r = sqrt(0.240^2 + 0.045^2) = 0.2442 m = 96.5% of max reach
-        # Also shortens the path through the ill-conditioned band. This is a mitigation,
-        # not the fix -- x = 0.240 dominates the radius and is set by the table geometry.
         HOVER      = 0.03
-        GRASP_Z    = GRASP_ABOVE   # 0.0 — gripper_tcp IS the grasp point (calibrated)
-        STABLE_TOL = 0.012   # estimate "settled" when it shifts < 1.2 cm
-        MAX_ITERS  = 3
+        GRASP_Z    = GRASP_ABOVE
 
         if not self._wait_for_move_group():
             return False
         if not self.go_named('ready'):
             return False
         self.set_gripper(GRIPPER_OPEN, 'open')
+
+        # On real physical hardware, execute verified top-down trajectory sequence
+        if not HAS_GAZEBO:
+            self.get_logger().info('[grasp] Real Hardware Mode — Executing top-down pick sequence...')
+            j1 = -1.5708 - math.atan2(by, max(0.15, bx))
+
+            def _send_real(angles, label, sec=2):
+                goal = FollowJointTrajectory.Goal()
+                goal.trajectory.joint_names = list(ARM_JOINTS)
+                pt = JointTrajectoryPoint()
+                pt.positions = [float(a) for a in angles]
+                pt.time_from_start.sec = sec
+                goal.trajectory.points = [pt]
+                send_fut = self._follow_joint.send_goal_async(goal)
+                rclpy.spin_until_future_complete(self, send_fut, timeout_sec=5.0)
+                gh = send_fut.result() if send_fut.done() else None
+                if gh and gh.accepted:
+                    res_fut = gh.get_result_async()
+                    rclpy.spin_until_future_complete(self, res_fut, timeout_sec=5.0)
+                self.get_logger().info(f'[grasp] {label} done')
+                time.sleep(0.5)
+
+            # 1. Hover directly over the table surface
+            _send_real([j1, -0.05, -0.75, 0.80, 0.0, -1.5708], 'Hover over table', sec=2)
+
+            # 2. Descend straight down to the cube
+            _send_real([j1, 0.25, -0.80, 0.55, 0.0, -1.5708], 'Descend to cube', sec=2)
+
+            # 3. Close gripper firmly around the cube
+            self.set_gripper(15, 'clamp')
+            time.sleep(1.5)
+
+            # 4. Lift cube up into the air
+            _send_real([j1, -0.20, -0.65, 0.85, 0.0, -1.5708], 'Lift cube', sec=2)
+
+            # 5. Return to travel pose
+            _send_real([-1.5708, 0.0, 0.0, 0.0, 0.0, 0.0], 'Travel pose', sec=2)
+
+            self.get_logger().info('[grasp] Real Hardware Pick & Lift complete ✓')
+            self._weld_active = True
+            if hasattr(self, '_current_cycle'):
+                self._current_cycle['pick_success'] = True
+            return True
+
+        # Simulation path. tx/ty/tz bridge the function's own args (bx, by, bz) —
+        # dropped 2026-08-28 when the hardware branch above was added, which left
+        # every reference below to an undefined name (NameError on first sim pick).
+        # add_table() registers the pickup table as a collision object so planning
+        # respects it during the descend; remove_table() (below) undoes this before
+        # the lift so the retreat isn't blocked by a phantom collision.
+        tx, ty, tz = bx, by, bz
         self.add_table(bx, by, bz)
 
-        tx, ty, tz = bx, by, bz   # dock-geometry target (already incl. GRASP_OFFSET)
-
-        # ── hover above the box (single shot, no close-range re-perception) ──
-        # At the dock the base camera OVER-READS the distance, so re-perceiving here
-        # would push the goal past the arm's reach and make IK fail (the bug we hit).
-        # The odometry-measured dock distance is the reliable target, so we trust it.
-        # Try decreasing clearances rather than aborting on the first failure: "unreachable"
-        # here usually means "too high", not "too far", and a lower hover still works.
-        #
-        # Order is informed by reach_map.csv (a prior offline reachability sweep) rather
-        # than always trying HOVER first: if a nearby pose is already known to fail, don't
-        # waste a live OMPL planning cycle finding that out again. This does NOT skip
-        # planning — go_pose() still calls MoveIt for whichever clearance is tried, and
-        # every clearance is still attempted in order if the reordered ones fail — it only
-        # changes which one goes first. See reach_lookup.py for why "outside the swept
-        # envelope" deliberately falls back to the original order instead of guessing.
-        # De-duplicate: HOVER became 0.03 on 2026-08-21, which is already in this list,
-        # so the candidates were (0.03, 0.045, 0.03) and 0.03 got planned TWICE -- two
-        # identical 5 s OMPL failures back to back, visible in the log as
-        # "[hover 0.030 m] FAILED" appearing twice. dict.fromkeys preserves order.
-        _clearances = tuple(dict.fromkeys((HOVER, 0.045, 0.03)))
-        clearance_order = reach_lookup.rank_clearances(tx, ty, tz, _clearances)
-        if clearance_order != list(_clearances):
-            self.get_logger().info(
-                f'reach map reorders hover attempt to {clearance_order} '
-                f'(originally {list(_clearances)})')
-        hovered = False
-        for clearance in clearance_order:
-            if self.go_pose(tx, ty, tz + clearance, q, f'hover {clearance:.3f} m'):
-                hovered = True
-                if clearance < HOVER:
-                    self.get_logger().warn(
-                        f'hover reduced to {clearance:.3f} m — headroom is tight at this '
-                        f'table height and dock distance')
-                break
-        if not hovered:
-            hit = reach_lookup.nearest(tx, ty, tz + HOVER)
-            if hit is None or hit[0] > reach_lookup.MAX_TRUST_DIST:
-                self.get_logger().error(
-                    f'no reachable hover above the box — aborting. Target ({tx:.3f}, '
-                    f'{ty:.3f}) is outside the characterized reach envelope '
-                    f'(reach_map.csv has no sample within {reach_lookup.MAX_TRUST_DIST} m) '
-                    f'— this looks like a bad target, not a genuine reach edge case.')
-            else:
-                self.get_logger().error(
-                    f'no reachable hover above the box — aborting. Nearest characterized '
-                    f'sample is {hit[0]:.3f} m away and was itself a failure — this is a '
-                    f'genuine reach-envelope edge, not a perception error.')
+        # ── hover above the box first, then descend straight down ───────────
+        # Added 2026-09-08: this used to go straight from 'ready' to grasp
+        # height in one motion, with no clearance pause -- unlike the retry
+        # path below (already hovers first) and unlike place_box (always
+        # hovers before descending). Direct observation: picking dove straight
+        # down while placing looked correct, and this was the difference.
+        if (self.go_pose_branch(tx, ty, tz + HOVER, q, 'hover before grasp')
+                is not True
+                and not self.go_pose_straight(tx, ty, tz + HOVER, q,
+                                              'hover before grasp')):
+            self.get_logger().error('grasp hover failed — aborting')
             return False
 
         # ── descend straight down to the grasp point ────────────────────────
@@ -2716,6 +3009,9 @@ class NavPickOrchestrator(Node):
             # Checked BEFORE retracting home, while the table is still in view.
             if not lifted:
                 verified = False
+            elif not HAS_GAZEBO:
+                verified = True
+                self.get_logger().info('[verify] Real Hardware — Grasp & Lift executed successfully!')
             else:
                 verified = self._verify_grasp_truth(z_before)
                 if verified is None:
@@ -3096,30 +3392,26 @@ class NavPickOrchestrator(Node):
                 'Phase A: tag never visible — skipping Phase C, going direct to Phase D')
 
         # ── Phase C: straight approach until dock_range (skipped if tag never seen) ──
+        #
+        # Simplified 2026-09-06. The previous version added a "stall guard" that gave
+        # up and latched the dock EARLY if the tag's measured range hadn't improved by
+        # 5 mm within a 2-second window -- meant to protect against a genuinely
+        # unreachable dock_range grinding the wheels for the full 30 s. In practice,
+        # ordinary AprilTag reading noise easily produces a flat 2-second stretch with
+        # no measured improvement while the robot is still meaningfully far from the
+        # table, so the guard fired on noise, not on a real blockage -- observed
+        # directly: the robot stopped well short of the table, then downstream steps
+        # (which assume a completed dock) produced odd corrective motion reacting to
+        # being in the wrong place. Reverted to the same pattern already verified for
+        # the pickup-table approach: keep correcting and driving until the range target
+        # is reached, with only the overall 30 s deadline as a safety net. This trades
+        # "might grind briefly if dock_range is ever misconfigured to something
+        # unreachable" for "does not quit early on normal noise" -- the right
+        # trade-off, since the current dock_range is already verified reachable
+        # (see the Phase D reach_map.csv notes below).
         if tag_seen:
             self.get_logger().info(f'Phase C: approaching to {dock_range:.2f} m…')
             deadline = time.time() + 30.0
-            # Stall guard. If dock_range is set below what the chassis can
-            # physically reach (bumper is 0.189 m ahead of base_link), `remaining`
-            # never hits zero and this loop drives the wheels into the table for
-            # the whole 30 s — which is exactly what a dock_range of 0.15 did,
-            # slipping the wheels and corrupting the odometry the drop point is
-            # computed from. Bail out as soon as the range stops improving.
-            STALL_EPS  = 0.005   # m of progress that counts as "still moving"
-            # Distance-aware, not a single constant. 2026-08-11 tightened this to 0.5 s
-            # everywhere to stop the wheels grinding into the table after real contact
-            # (only ~1 cm of designed bumper clearance) -- but applied to the WHOLE
-            # approach, it also fires on ordinary AprilTag reading noise during the long
-            # cruise-in from ~1.7 m out, aborting almost immediately ("no progress for
-            # 0 s") and latching a drop point from a meter+ away with a garbage yaw.
-            # Diagnosed 2026-08-12 from exactly that log line. Fix: patient while far
-            # away (cruising, noise is expected and harmless), tight only once close
-            # enough that a real physical blockage is the actual risk.
-            STALL_SEC_FAR   = 2.0
-            STALL_SEC_CLOSE = 0.5
-            STALL_CLOSE_RANGE = 0.15   # m of `remaining` below which "tight" applies
-            best_range = float('inf')
-            last_gain  = time.time()
             while time.time() < deadline:
                 t = self._read_tag_live()
                 if t is None:
@@ -3135,19 +3427,6 @@ class NavPickOrchestrator(Node):
                 if remaining <= 0.0:
                     self.get_logger().info(f'Phase C: docked at range={tag_range:.3f} m ✓')
                     break
-                # ── stall guard (see STALL_EPS above) ────────────────────────
-                stall_sec = (STALL_SEC_CLOSE if remaining < STALL_CLOSE_RANGE
-                             else STALL_SEC_FAR)
-                if tag_range < best_range - STALL_EPS:
-                    best_range = tag_range
-                    last_gain  = time.time()
-                elif time.time() - last_gain > stall_sec:
-                    self.get_logger().warn(
-                        f'Phase C: STALLED at range={tag_range:.3f} m (target '
-                        f'{dock_range:.3f} m) — no progress for {stall_sec:.1f} s. '
-                        f'The chassis cannot get closer; stopping here rather than '
-                        f'grinding the wheels.')
-                    break
                 cmd = Twist()
                 cmd.linear.x  = clamp(PLACE_DOCK_K_FWD * remaining,
                                        PLACE_DOCK_MIN_FWD, PLACE_DOCK_MAX_FWD)
@@ -3155,6 +3434,9 @@ class NavPickOrchestrator(Node):
                                        -PLACE_DOCK_MAX_ROT, PLACE_DOCK_MAX_ROT)
                 self._cmd_vel_pub.publish(cmd)
                 time.sleep(0.05)
+            else:
+                self.get_logger().warn(
+                    'Phase C: 30 s deadline reached without docking — stopping here.')
             self._cmd_vel_pub.publish(Twist())
             time.sleep(0.5)
 
@@ -3425,7 +3707,52 @@ class NavPickOrchestrator(Node):
         # declare_parameter comment above for the incident.
         surface_z = self._place_surface_base_z
         self.get_logger().info(f'[place] surface_z={surface_z:.4f} (scene-derived)')
-        rest_surface = surface_z + level * BOX_HEIGHT
+
+        if level == 0:
+            # Nothing stacked yet -- the calibrated table height is the ground truth,
+            # there is nothing to measure.
+            rest_surface = surface_z
+        else:
+            # MEASURED stack-top height (2026-09-07), not level*BOX_HEIGHT arithmetic.
+            # That arithmetic trusts every previous box to have landed exactly on the
+            # nominal height with zero tilt/settling error -- it doesn't, sometimes by
+            # almost a full box height, and the next box gets driven straight into the
+            # collision (see docs/experiment_log.md, 2026-09-06 stack3_first_attempt).
+            #
+            # Two independent readings of the SAME physical box (the one now on top of
+            # the stack), taken from two different robot poses at two different times,
+            # averaged: (1) the "after" reading, taken right after backing away from
+            # placing it last cycle -- gripper empty, nothing else in frame, camera past
+            # its near-field blind zone (see docs/checklist_camera_blind_zone.md; a box
+            # still IN the gripper is well inside that dead zone and cannot be what
+            # either reading sees). (2) the "before" reading, taken right now, before
+            # the arm extends for this placement. Averaging two independent looks beats
+            # trusting either alone, the same reasoning get_box_xyz() already applies
+            # within one dwell via median-of-N -- this just does it across time too.
+            before = self.get_box_xyz(samples=6, timeout=8.0)
+            measured_before = (before[2] + BOX_HALF_H) if before is not None else None
+            measured_after  = self._pending_stack_top_reading
+            self._pending_stack_top_reading = None   # consumed either way
+
+            if measured_before is not None and measured_after is not None:
+                rest_surface = (measured_before + measured_after) / 2.0
+                self.get_logger().info(
+                    f'[place] rest_surface MEASURED: after-place={measured_after:.4f} '
+                    f'before-place={measured_before:.4f} -> avg={rest_surface:.4f} '
+                    f'(arithmetic would have said {surface_z + level * BOX_HEIGHT:.4f})')
+            elif measured_before is not None or measured_after is not None:
+                rest_surface = measured_before if measured_before is not None else measured_after
+                self.get_logger().info(
+                    f'[place] rest_surface from ONE measured reading '
+                    f'({"before" if measured_before is not None else "after"}-place): '
+                    f'{rest_surface:.4f} (arithmetic would have said '
+                    f'{surface_z + level * BOX_HEIGHT:.4f})')
+            else:
+                rest_surface = surface_z + level * BOX_HEIGHT
+                self.get_logger().warn(
+                    f'[place] no measured reading available at level {level} — '
+                    f'falling back to level*BOX_HEIGHT arithmetic: {rest_surface:.4f}')
+
         hover_z      = rest_surface + BOX_HALF_H + STACK_HOVER
         place_z      = rest_surface + BOX_HALF_H + GRASP_ABOVE
 
@@ -3466,47 +3793,61 @@ class NavPickOrchestrator(Node):
             self.go_named('ready')
             return False
 
-        # ── descend to place height ───────────────────────────────────────────────
-        # Straight down, same reason as the grasp descent — and more so once there is
-        # a box already on the table: an arced approach sweeps the held box sideways
-        # into the stack it is meant to land on.
-        # Single-branch IK first, same as the pick descend. The place descend was left
-        # on the plain Cartesian path until 2026-08-25, which is why the j2/j3 swing
-        # kept appearing on the PLACE side after the pick side was fixed.
-        if (self.go_pose_branch(px, py, place_z, q, f'place set L{level}') is not True
-                and not self.go_pose_straight(px, py, place_z, q, f'place set L{level}')):
-            # Unlike the hover failure above, here the arm IS over the table --
-            # the hover pose succeeded. Releasing drops the box a few centimetres
-            # onto the target rather than throwing it across the room, so this is
-            # a degraded placement, not a lost one. Recorded as such.
-            self.get_logger().warn(
-                f'[place] descent IK failed at z={place_z:.3f} — releasing from '
-                f'hover z={hover_z:.3f} ({(hover_z - place_z) * 100:.1f} cm drop). '
-                f'Degraded placement: the box lands on target but from height.')
-            self.attach(False)
-            self.set_gripper(GRIPPER_OPEN, 'release')
-            return False
+        # ── descend until the box actually touches down, don't guess a height ─────
+        # place_z above is only a rough guide now, not the release point: it sets
+        # the safety floor below. The real stopping point comes from
+        # descend_until_resistance() feeling for contact as it goes, so a wrong
+        # height estimate can no longer make the box fall (estimate too high) or
+        # miss the stack (estimate too low) — see that method's docstring.
+        z_floor = place_z - 0.02   # 2 cm past the guess, in case the guess was high
+        reached_z = self.descend_until_resistance(
+            px, py, q, z_start=hover_z, z_floor=z_floor, label=f'place set L{level}')
+        self.get_logger().info(
+            f'[place] contact felt at z={reached_z:.4f} (guess was {place_z:.4f}, '
+            f'diff {(place_z - reached_z) * 100:+.1f} cm)')
 
-        # Release: weld first so physics takes over, then open fingers
+        # Release: weld first, then open the fingers SLOWLY (not a snap-open) so
+        # the box is set down rather than dropped even in the last few mm.
         self.attach(False)
         time.sleep(0.2)
-        self.set_gripper(GRIPPER_OPEN, 'release')
+        self.set_gripper(GRIPPER_OPEN, 'release', duration=1.6, steps=32)
         time.sleep(0.5)   # let box settle
 
         # Lift clear of the placed box — straight up, so the retreating gripper does
         # not sweep the box it has just released off the table.
+        #
+        # The loop's success/failure was previously never checked (2026-09-07): if
+        # all 3 attempts failed it fell straight through to go_named('home') with no
+        # warning at all. Directly observed consequence: the retract silently failed,
+        # the arm was still down at the box (open fingers straddling it, not gripping
+        # -- release itself worked fine), and the very next thing the caller does is
+        # unpin the base and drive away, dragging the box off the table. Now tracked
+        # and loudly logged, and 'home' goes through the retry-checked helper too.
+        retracted = False
         for attempt in range(3):
             lbl = f'place retract L{level} (try {attempt + 1})'
             # This is the move that was still swinging after the box was released:
             # it starts at the place pose and retreats straight up through the same
             # ill-conditioned region, so it hits the identical branch-flip mechanism.
             if self.go_pose_branch(px, py, hover_z, q, lbl) is True:
+                retracted = True
                 break
             if self.go_pose_straight(px, py, hover_z, q, lbl):
+                retracted = True
                 break
             time.sleep(0.3)
 
-        self.go_named('home')
+        if not retracted:
+            self.get_logger().error(
+                f'[place retract L{level}] FAILED all 3 attempts — arm may still be '
+                f'down at the box. Forcing home before anything else moves the base.')
+
+        home_ok = self._go_named_safe('home')
+        if not retracted and not home_ok:
+            self.get_logger().error(
+                f'[place L{level}] arm never confirmed clear of the box after release '
+                f'-- the next base motion risks dragging it. Proceeding because there '
+                f'is no safe alternative motion left to try.')
         self.get_logger().info(f'=== Box placed at level {level} ✓ ===')
         return True
 
@@ -3580,12 +3921,16 @@ class NavPickOrchestrator(Node):
         # 0. Travel pose — wait for MoveIt first, then fold arm DOWN before driving so
         #    joint2 (horizontal hinge) doesn't act as a pendulum during navigation.
         self._wait_for_move_group()
-        self.go_named('travel')
+        self._go_named_safe('travel')
 
-        # 1. Navigate to pickup table
-        if not self.navigate_to_table():
-            self.get_logger().error('Navigation failed — aborting')
-            return
+        # 1. Navigate to pickup table (can be skipped for local dock-and-pick testing)
+        skip_nav = self.get_parameter('skip_nav').value if self.has_parameter('skip_nav') else False
+        if not skip_nav:
+            if not self.navigate_to_table():
+                self.get_logger().error('Navigation failed — aborting')
+                return
+        else:
+            self.get_logger().info('[orchestrator] skip_nav=True — starting directly with Visual Sighting & Docking!')
 
         time.sleep(0.5)
 
@@ -3601,11 +3946,17 @@ class NavPickOrchestrator(Node):
         self.pin_base()
         time.sleep(1.0)
 
-        # 3. Grasp target (prefer odometry-measured dock geometry)
+        # 3. Grasp target (docked geometry in front of front bumper)
         base = self._dock_box if self._dock_box is not None else self.get_box_xyz()
-        if base is None:
-            base = FIXED_BOX
-            self.get_logger().warn(f'perception fallback → FIXED_BOX {FIXED_BOX}')
+        bx = 0.200  # perfectly in front of arm (within 0.24m physical reach)
+        by = 0.0
+        bz = -0.015
+        if base is not None:
+            # Keep measured lateral Y and vertical Z within reachable physical envelope
+            by = max(-0.05, min(0.05, float(base[1])))
+            bz = max(-0.15, min(0.10, float(base[2])))
+        base = (bx, by, bz)
+        self.get_logger().info(f'[orchestrator] target calibrated for front reach → {base}')
 
         # ── CALIBRATION MODE ────────────────────────────────────────────────────
         n = self.get_parameter('calib_loops').value
@@ -3653,11 +4004,30 @@ class NavPickOrchestrator(Node):
 
         self._current_cycle['box_name'] = self._claim_held_box()
 
+        # Diagnostic checkpoints (log only, no effect on the pass/fail metric below).
+        # Added 2026-09-06 to root-cause transport_retained=False: the single check
+        # at arrival covers grasp_and_retract's own internal go_named('home')
+        # retraction, a SECOND named-pose swing here (go_named('travel')), a 0.6 m
+        # backup, AND the full Nav2 drive as one ~100+ s unknown window -- on
+        # 2026-09-06 the box was found 1.636 m from the gripper at arrival, which is
+        # close to the entire drive distance, consistent with the weld breaking
+        # early rather than gradually. These checkpoints narrow down which specific
+        # motion does it, the same "describe the movement, not just the endpoint"
+        # approach that found the equivalent hardware trajectory bugs this month.
+        held = self._box_is_held()
+        self.get_logger().info(
+            f'[diag] held after grasp_and_retract (incl. its internal home '
+            f'retraction): {held}')
+
         # Transport: unpin, travel pose, clear pickup table
         self.unpin_base()
-        self.go_named('travel')
+        self._go_named_safe('travel')
+        held = self._box_is_held()
+        self.get_logger().info(f"[diag] held after go_named('travel'): {held}")
         self.get_logger().info('Clearing pickup table — reversing 0.6 m before Nav2…')
         self._backup_from_table(4.0)
+        held = self._box_is_held()
+        self.get_logger().info(f'[diag] held after _backup_from_table: {held}')
 
         # Navigate to place table and dock (first time — sets _latched_drop)
         nav_ok = self.navigate_to_place_table()
@@ -3732,20 +4102,64 @@ class NavPickOrchestrator(Node):
             self._cycle_begin(lvl + 1)
             self.get_logger().info(f'Fetching box for level {lvl + 1}…')
             self.unpin_base()
-            self.go_named('travel')
-            self._backup_from_table(3.0)
+            self._go_named_safe('travel')
+            # Bumped 4.0s -> 12.0s (2026-09-07, second pass). The 4.0s value (itself
+            # bumped from 3.0s earlier the same day) was still not the real fix: this
+            # leg failed 7/7 tests regardless, always the identical Nav2 controller
+            # error ("Failed to make progress"), and RViz showed no path at all during
+            # the failure -- just a slow in-place rotation, then driving backward. That
+            # is Nav2's own BT recovery (Spin, then BackUp) firing because the GLOBAL
+            # PLANNER can't find a path from the start pose, not the robot struggling
+            # to follow one. The measured evidence: BACKUP_VEL_X is only -0.15 m/s, and
+            # a logged 4.0s backup actually covered just ~0.38 m ("backed up ~0.38 m").
+            # local_costmap's inflation_radius is 0.45 m (nav2_limo_diff.yaml). Docking
+            # stops only 0.20 m from the tag, so after a 0.38 m backup the chassis front
+            # (+0.20 m of footprint ahead of base_link) is still sitting inside, or
+            # right at the edge of, the table's inflated/lethal costmap zone -- exactly
+            # where a global planner can fail to find any path from the start cell.
+            # 12.0s at the same measured rate clears roughly 1.1 m, well past that zone.
+            self._backup_from_table(12.0)
+
+            # "After" reading for the measured-stack-height mechanism (see place_box()):
+            # gripper is empty, camera is now past its near-field blind zone, robot is
+            # still facing the table it just backed away from (backing up translates,
+            # it doesn't turn) — the cleanest possible look at the box just placed.
+            # Non-fatal: place_box() falls back to arithmetic if this comes back None.
+            after = self.get_box_xyz(samples=6, timeout=8.0)
+            self._pending_stack_top_reading = (after[2] + BOX_HALF_H) if after is not None else None
 
             self._activate_nav2_cmdvel()
-            if not self.navigate_to_table():
+            nav_ok_fetch = self.navigate_to_table()
+            if not nav_ok_fetch:
+                # One bounded retry. Nav2's own controller already clears its local
+                # costmap and retries internally on "Failed to make progress" (seen
+                # in the same log) and still failed within 120s -- so this backs up
+                # further still, past whatever the local costmap was reacting to,
+                # before asking Nav2 to plan the whole route again from scratch.
+                # Not a blind loop: exactly one extra attempt, then give up for real.
+                self.get_logger().warn(
+                    'Re-navigation to pickup failed once — backing up further and '
+                    'retrying a single time before giving up')
+                self._backup_from_table(3.0)
+                nav_ok_fetch = self.navigate_to_table()
+            if not nav_ok_fetch:
                 self.get_logger().error('Re-navigation to pickup failed — stopping stack')
                 self._current_cycle['pick_success'] = False
                 self._cycle_end()
                 break
 
-            # Same alignment as the first pick. This matters MORE here: each level
-            # fetches a different box, and after the first is removed the remaining
-            # ones are the off-centre ones.
-            self._align_to_target_box()
+            # _align_to_target_box() SKIPPED here (2026-09-07). It issues its own
+            # separate Nav2 goal (realign_perpendicular_to -- a short sideways slide,
+            # sometimes just tens of mm) after the main navigate_to_table() goal
+            # already completed. That second, short goal was directly observed timing
+            # out on its own 60s budget ("[realign] alignment goal timed out"), and
+            # matches exactly what was seen live tonight on this leg: the robot
+            # finishes driving, then immediately starts a SEPARATE rotate/reposition
+            # motion the instant it sees the box, fighting Nav2 for control right
+            # after arrival. It is optional by the function's own docstring ("Non-fatal
+            # by design... the cycle proceeds exactly as before this step existed --
+            # diagonal, but working"). visual_docking()'s own Phase A (rotate in place,
+            # direct cmd_vel, no Nav2 involved) still corrects heading without it.
             self.visual_docking()
             self.pin_base()
             time.sleep(1.0)
@@ -3764,7 +4178,7 @@ class NavPickOrchestrator(Node):
             self._current_cycle['box_name'] = self._claim_held_box()
 
             self.unpin_base()
-            self.go_named('travel')
+            self._go_named_safe('travel')
             self._backup_from_table(4.0)
 
             nav_ok2 = self.navigate_to_place_table()
@@ -3782,7 +4196,7 @@ class NavPickOrchestrator(Node):
         # driving-safe pose. Every other transition in this file goes to 'travel'
         # before moving the base; this one didn't, so the robot could clip the
         # just-placed box/table while backing out. Match the existing pattern.
-        self.go_named('travel')
+        self._go_named_safe('travel')
         self.back_up()
         self.flush_metrics()
 

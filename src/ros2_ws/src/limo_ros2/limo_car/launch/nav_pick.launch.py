@@ -416,6 +416,18 @@ def generate_launch_description():
                 # box, the remaining ones present a new rightmost every cycle with no
                 # counter to keep in sync.
                 'target_policy': target_policy,
+                # Explicit sim values, not relying on the node's own module defaults.
+                # Those defaults were silently widened to real-lab values during
+                # hardware testing (2026-09-04ish) with nothing here overriding them,
+                # which reopened the 2026-08-14 "phantom blob" failure that narrowing
+                # this exact window had fixed. Pinning it here means a future
+                # hardware-motivated edit to the node's defaults can't silently
+                # change simulation behaviour again.
+                'search_x_max':   1.60,
+                'search_y_abs':   0.60,
+                'search_z_min':  -0.10,
+                'search_z_max':   0.20,
+                'min_area_fraction': 0.15,
             }])])
 
     # ── 4b. tag_dock_estimator — delay 15 s (parallel with box_estimator) ────

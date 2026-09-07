@@ -159,7 +159,7 @@ class PickOrchestrator(Node):
     # ── goal constructors ─────────────────────────────────────────────────────
 
     @staticmethod
-    def _joint_constraints(values, tol=0.01):
+    def _joint_constraints(values, tol=0.05):
         c = Constraints()
         for name, val in zip(ARM_JOINTS, values):
             jc = JointConstraint()

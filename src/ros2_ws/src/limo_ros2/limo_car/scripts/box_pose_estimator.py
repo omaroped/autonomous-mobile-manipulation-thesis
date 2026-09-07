@@ -35,7 +35,27 @@ from std_msgs.msg import Float64
 import tf2_ros
 from tf2_geometry_msgs import do_transform_point
 
-from cv_bridge import CvBridge
+# cv_bridge deliberately NOT imported. Its prebuilt Boost extension
+# (cv_bridge_boost) is compiled against NumPy 1.x's C API; with NumPy 2.2.6
+# installed, `from cv_bridge import CvBridge` itself raises
+# `AttributeError: _ARRAY_API not found` -- not a per-call failure, the whole
+# module fails to import, which silently took this entire node down at startup
+# (2026-09-06). sensor_msgs/Image already carries everything needed to build a
+# numpy array directly (height, width, encoding, data), so _imgmsg_to_array()
+# below replaces every incoming conversion with no third-party dependency. The
+# one outgoing conversion (_publish_debug_image) was already fixed the same way
+# on 2026-09-03 for the identical error, on the real robot.
+
+
+def _imgmsg_to_array(msg):
+    """sensor_msgs/Image -> numpy array, for the three encodings this node sees."""
+    if msg.encoding == '16UC1':
+        return np.frombuffer(msg.data, dtype=np.uint16).reshape(msg.height, msg.width)
+    if msg.encoding == '32FC1':
+        return np.frombuffer(msg.data, dtype=np.float32).reshape(msg.height, msg.width)
+    if msg.encoding in ('bgr8', 'rgb8'):
+        return np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, 3)
+    raise ValueError(f'_imgmsg_to_array: unsupported encoding {msg.encoding!r}')
 import cv2
 import numpy as np
 
@@ -80,28 +100,45 @@ DEPTH_MAX_DEFAULT = 3.0    #   override via the depth_min parameter on hardware.
 # does the decisive work.
 SEARCH_X_MIN_DEFAULT = 0.15    # = near clip; nothing closer is measurable
 SEARCH_X_MAX_DEFAULT = 1.60    # beyond the ~0.92 m first sighting, with margin
-SEARCH_Y_ABS_DEFAULT = 0.60    # ~the FOV half-width at max range (0.92·tan34°)
+SEARCH_Y_ABS_DEFAULT = 0.60    # ~the FOV half-width at max range (0.92*tan34deg)
 SEARCH_Z_MIN_DEFAULT = -0.10   # 0.115 m below the expected box centre
 SEARCH_Z_MAX_DEFAULT = 0.20    # 0.185 m above it
+# Reverted 2026-09-06: widened to 2.50/1.20/-0.60/0.35 during real-hardware lab
+# testing (a real room needs a wider net than the sim world). That widening was
+# never scoped to hardware -- these are the SIMULATION module defaults, and
+# nav_pick.launch.py does not override them, so sim silently inherited the lab
+# values. The 2026-08-14 "phantom blob" full-pipeline failure was fixed by
+# NARROWING this exact window; the wide values reopen that failure mode.
+# nav_pick.launch.py now passes these explicitly (see nav_pick.launch.py) so a
+# future hardware-side edit to this file's defaults can't silently change sim
+# again -- the hardware script that actually needs the wide window sets its own
+# parameters at launch, same as it already does for box_edge_m.
 
 # ── Size plausibility ────────────────────────────────────────────────────────
-# A blob's apparent area is fixed by geometry: a BOX_EDGE-wide object at depth d
-# subtends BOX_EDGE * fx / d pixels, so its area should be about the square of that.
-# Anything far smaller at the same depth is a fragment -- a specular highlight, or a
-# piece of a box whose mask broke up -- not the object.
+BOX_EDGE_M          = 0.035   # DEFAULT = SIM cube edge (worlds/final_map.world).
+                              # The physical lab cube is 25 mm, so hardware must override:
+                              #   ros2 param set /box_pose_estimator box_edge_m 0.025
+                              # Hardcoding 0.025 here (as was briefly done on 2026-08-27)
+                              # silently mis-sizes the gate for every simulation run.
+MIN_AREA_FRACTION   = 0.15    # robust for partial occlusion / oblique views
+# Reverted 2026-09-06: silently dropped back to 0.02 after real_hardware_22
+# (2026-09-03, docs/experiment_log.md) had already restored it to 0.15 because
+# 0.02 accepted 39 px^2 noise specks as valid detections.
+
+# Upper bound on the SAME geometry. A blob far larger than the cube can subtend at its
+# own measured depth is not the cube, whatever colour it is.
 #
-# This gate exists because target_policy picks by POSITION ('rightmost') or by depth
-# ('nearest'), never by size, so a speck could and did win. Measured 2026-08-25: with
-# three boxes on the table the detector targeted a 321 px^2 blob at 0.155 m camera
-# range, where a real box subtends ~11500 px^2 -- about 3% of a box. The arm drove to
-# it, the gripper closed on empty air beside the real box ("swept to the close limit
-# with NO resistance"), and the pick failed all three attempts.
+# WHY THIS EXISTS. The size gate was one-sided until 2026-09-03: it rejected blobs too
+# small and let anything oversized through. Harmless in simulation, where the world held
+# exactly one blue object, so "find blue" and "find the cube" were the same question. In
+# a real lab they are not -- two blue office chairs produced ~11900 px^2 blobs where a
+# 25 mm cube at 0.42 m subtends ~1275 px^2, and the estimator locked onto a chair and
+# reported the target 16 cm off to the right.
 #
-# The fraction is deliberately generous. At grasp range the gripper fingers occlude
-# part of the box, and the top face is viewed obliquely, so a genuine box can read
-# well under its ideal area -- but not by an order of magnitude.
-BOX_EDGE_M          = 0.035   # collision box edge (worlds/final_map.world)
-MIN_AREA_FRACTION   = 0.15    # of the geometrically expected area at that depth
+# 4.0 on AREA = 2x on linear width. Deliberately generous: the cube is normally seen as
+# two faces at once (top plus a side), not one, and blur inflates a small blob's mask.
+# The chair was ~9x expected, so this separates them with a wide margin.
+MAX_AREA_FACTOR     = 4.0
 
 
 class BoxPoseEstimator(Node):
@@ -109,7 +146,6 @@ class BoxPoseEstimator(Node):
     def __init__(self):
         super().__init__('box_pose_estimator')
 
-        self.bridge = CvBridge()
         self._depth = None          # latest depth image (np.float32)
         self._fx = self._fy = None  # intrinsics
         self._cx = self._cy = None
@@ -146,6 +182,12 @@ class BoxPoseEstimator(Node):
         # Live-tunable: raise to reject more aggressively, set 0.0 to disable.
         #   ros2 param set /box_pose_estimator min_area_fraction 0.25
         self.declare_parameter('min_area_fraction', MIN_AREA_FRACTION)
+        # Upper size bound -- see MAX_AREA_FACTOR. Set <= 0 to disable:
+        #   ros2 param set /box_pose_estimator max_area_factor 0.0
+        self.declare_parameter('max_area_factor', MAX_AREA_FACTOR)
+        # Sim cube is 35 mm, the lab cube 25 mm. Only the size-plausibility gate uses
+        # this, so it must follow the box actually in front of the camera.
+        self.declare_parameter('box_edge_m', BOX_EDGE_M)
 
         # Subscribers
         self.create_subscription(CameraInfo, '/depth_camera/depth/camera_info',
@@ -183,10 +225,15 @@ class BoxPoseEstimator(Node):
     def _depth_cb(self, msg: Image):
         try:
             if msg.encoding == '16UC1':
-                depth_mm = self.bridge.imgmsg_to_cv2(msg, '16UC1')
-                self._depth = depth_mm.astype(np.float32) / 1000.0
+                depth_mm = _imgmsg_to_array(msg)
+                d = depth_mm.astype(np.float32) / 1000.0
             else:
-                self._depth = self.bridge.imgmsg_to_cv2(msg, '32FC1')
+                d = _imgmsg_to_array(msg).astype(np.float32)
+                # If values are in mm (median > 10), convert to meters
+                finite_vals = d[np.isfinite(d) & (d > 0)]
+                if len(finite_vals) > 0 and np.median(finite_vals) > 10.0:
+                    d = d / 1000.0
+            self._depth = d
             self._depth_frame = msg.header.frame_id
         except Exception as e:
             self.get_logger().warn(f'depth convert failed: {e}', throttle_duration_sec=5.0)
@@ -198,7 +245,14 @@ class BoxPoseEstimator(Node):
             return
 
         try:
-            bgr = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
+            bgr = _imgmsg_to_array(msg)
+            if msg.encoding == 'rgb8':
+                # The sim camera plugin (sensor.xacro, format R8G8B8) publishes
+                # rgb8, not bgr8. cv_bridge's imgmsg_to_cv2(msg, 'bgr8') used to
+                # do a real channel swap here, not just a reinterpretation --
+                # without this, blue and red channels stay swapped and the blue
+                # cube detector (which compares b>g+15, b>r+25) silently breaks.
+                bgr = bgr[:, :, ::-1]
         except Exception as e:
             self.get_logger().warn(f'rgb convert failed: {e}', throttle_duration_sec=5.0)
             return
@@ -212,6 +266,7 @@ class BoxPoseEstimator(Node):
         candidates = self._detect_box_pixels(bgr, depth, h, w)
         if not candidates:
             self.get_logger().info('No blue box visible.', throttle_duration_sec=3.0)
+            self._publish_debug_image(bgr, msg.header, None, [])
             return
 
         # ── Search window ────────────────────────────────────────────────────
@@ -237,16 +292,29 @@ class BoxPoseEstimator(Node):
                 throttle_duration_sec=3.0)
             return
 
-        kept, rejected, too_small = [], [], []
+        kept, rejected, too_small, too_large = [], [], [], []
         for (cu, cv_, cz, carea) in candidates:
             cbase = do_transform_point(self._deproject(cu, cv_, cz), tf_base)
             entry = (cbase, cu, cv_, cz, carea)
             if not self._in_search_window(cbase.point):
                 rejected.append(entry)
-            elif not self._is_plausible_size(carea, cz):
-                too_small.append(entry)
             else:
-                kept.append(entry)
+                verdict = self._size_verdict(carea, cz)
+                if verdict == 'small':
+                    too_small.append(entry)
+                elif verdict == 'large':
+                    too_large.append(entry)
+                else:
+                    kept.append(entry)
+
+        if too_large:
+            hi = float(self.get_parameter('max_area_factor').value)
+            self.get_logger().warn(
+                f'{len(too_large)} blob(s) TOO LARGE to be the box, rejected: ' +
+                ', '.join(f'{e[4]:.0f}px2 at {e[3]:.2f} m '
+                          f'(max {self._expected_area(e[3]) * hi:.0f}px2)'
+                          for e in too_large[:3]),
+                throttle_duration_sec=2.0)
 
         if too_small:
             frac = float(self.get_parameter('min_area_fraction').value)
@@ -381,7 +449,8 @@ class BoxPoseEstimator(Node):
         """Pixel area a BOX_EDGE-wide object subtends at this depth."""
         if self._fx is None or depth <= 0:
             return 0.0
-        w = BOX_EDGE_M * self._fx / depth
+        edge = float(self.get_parameter('box_edge_m').value)
+        w = edge * self._fx / depth
         return w * w
 
     def _is_plausible_size(self, area, depth):
@@ -391,13 +460,25 @@ class BoxPoseEstimator(Node):
         constant: it scales itself. See the note at MIN_AREA_FRACTION for the run this
         was written from.
         """
-        frac = float(self.get_parameter('min_area_fraction').value)
-        if frac <= 0.0:
-            return True                      # gate disabled
+        return self._size_verdict(area, depth) == 'ok'
+
+    def _size_verdict(self, area, depth):
+        """'ok' | 'small' | 'large' -- which side of the geometry a blob falls on.
+
+        Both bounds are pure geometry against the blob's OWN measured depth, so
+        neither needs a per-range constant and neither needs recalibrating when the
+        camera or the cube changes: they scale themselves.
+        """
         expected = self._expected_area(depth)
         if expected <= 0.0:
-            return True                      # no intrinsics yet -- cannot judge
-        return area >= frac * expected
+            return 'ok'                      # no intrinsics yet -- cannot judge
+        frac = float(self.get_parameter('min_area_fraction').value)
+        if frac > 0.0 and area < frac * expected:
+            return 'small'
+        hi = float(self.get_parameter('max_area_factor').value)
+        if hi > 0.0 and area > hi * expected:
+            return 'large'
+        return 'ok'
 
     def _in_search_window(self, p):
         """Is this base_link point inside the plausible pick volume?
@@ -430,13 +511,23 @@ class BoxPoseEstimator(Node):
         d_min = float(self.get_parameter('depth_min').value)
         d_max = float(self.get_parameter('depth_max').value)
 
+        # Robust dual segmentation: Combined HSV + RGB Color Dominance
+        b = bgr[:, :, 0].astype(int)
+        g = bgr[:, :, 1].astype(int)
+        r = bgr[:, :, 2].astype(int)
+        rgb_mask = ((b > g + 15) & (b > r + 25) & (b > 50)).astype(np.uint8) * 255
+
         hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-        mask = cv2.inRange(hsv, BLUE_HSV_LO, BLUE_HSV_HI)
+        hsv_mask = cv2.inRange(hsv, BLUE_HSV_LO, BLUE_HSV_HI)
+        mask = cv2.bitwise_or(hsv_mask, rgb_mask)
+
         kernel = np.ones((5, 5), np.uint8)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
 
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        c_res = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours = c_res[0] if len(c_res) == 2 else c_res[1]
+
         candidates = []
         n_bad_depth = 0
         for c in contours:
@@ -448,9 +539,11 @@ class BoxPoseEstimator(Node):
                 continue
             u = int(m['m10'] / m['m00'])
             v = int(m['m01'] / m['m00'])
+
+            # Multi-scale depth search (handles IR center dropout & matte surface shadows)
             depths = []
-            for dy in range(-2, 3):
-                for dx in range(-2, 3):
+            for dy in range(-10, 20):
+                for dx in range(-18, 19):
                     ny, nx = v + dy, u + dx
                     if 0 <= ny < h and 0 <= nx < w:
                         d = depth[ny, nx]
@@ -469,14 +562,7 @@ class BoxPoseEstimator(Node):
         return candidates
 
     def _publish_debug_image(self, bgr, header, best, rejected):
-        """Overlay the selection on /box_detection_debug.
-
-        Rejected blobs are drawn too, in red, with the base_link coordinate that got
-        them rejected. Without this the window is invisible: a silently-dropped blob
-        and a blob that was never detected look identical from outside, which is the
-        position the 2026-08-14 investigation was in -- the log said "2 boxes
-        visible" but there was no way to see WHERE the second one was.
-        """
+        """Overlay the selection on /box_detection_debug."""
         vis = bgr.copy()
 
         for (pt_base, u, v, _z, area) in rejected:
@@ -489,11 +575,16 @@ class BoxPoseEstimator(Node):
         if best is not None:
             pt_base, u, v, _z, area = best
             p = pt_base.point
-            cv2.circle(vis, (u, v), 18, (0, 255, 0), 2)
+            # Draw prominent green bounding box and crosshair
+            bx_size = int(max(15, min(60, 40 / max(0.2, _z))))
+            cv2.rectangle(vis, (u - bx_size, v - bx_size), (u + bx_size, v + bx_size), (0, 255, 0), 3)
             cv2.drawMarker(vis, (u, v), (0, 255, 0), cv2.MARKER_CROSS, 20, 2)
-            cv2.putText(vis, f'x={p.x:.2f} y={p.y:.2f} z={p.z:.2f} m ({area:.0f}px)',
-                        (u + 22, v - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.55,
+            cv2.putText(vis, f'TARGET: x={p.x:.2f} y={p.y:.2f} z={p.z:.2f}m',
+                        (max(10, u - 60), max(25, v - bx_size - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.65,
                         (0, 255, 0), 2, cv2.LINE_AA)
+        else:
+            cv2.putText(vis, "SEARCHING FOR BLUE CUBE...", (20, 70),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2, cv2.LINE_AA)
 
         if self.get_parameter('search_enabled').value:
             banner = (f"win x[{self.get_parameter('search_x_min').value:.2f},"
@@ -506,10 +597,27 @@ class BoxPoseEstimator(Node):
         cv2.putText(vis, banner, (8, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
                     (255, 255, 0), 1, cv2.LINE_AA)
 
+        # Built by hand rather than via cv_bridge.cv2_to_imgmsg(). On the real
+        # robot (Jetson, 2026-09-03) that call raises KeyError: 16 -- a cv_bridge
+        # / numpy version incompatibility on the OUTGOING path only; incoming
+        # imgmsg_to_cv2 works, which is why detection ran fine while the debug
+        # overlay silently never published. A bgr8 Image is four fields and a
+        # byte buffer, so constructing it directly removes the dependency
+        # entirely and behaves identically in simulation.
         try:
-            self.debug_pub.publish(self.bridge.cv2_to_imgmsg(vis, 'bgr8'))
-        except Exception:
-            pass
+            m = Image()
+            m.header = header
+            m.height, m.width = vis.shape[:2]
+            m.encoding = 'bgr8'
+            m.is_bigendian = 0
+            m.step = m.width * 3
+            m.data = vis.tobytes()
+            self.debug_pub.publish(m)
+        except Exception as e:
+            # Was `except Exception: pass`, which is what hid the KeyError above
+            # for an unknown length of time. Never swallow this silently again.
+            self.get_logger().warn(f'debug image publish failed: {e!r}',
+                                   throttle_duration_sec=5.0)
 
     def _publish_latched(self):
         """Republish the last known box pose at 20 Hz, dynamically transformed from

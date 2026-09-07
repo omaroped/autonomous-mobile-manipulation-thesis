@@ -129,7 +129,16 @@ pickup_table:
   depth:       0.08            # along the approach axis (y) -- keeps the bumper clear
   width:       0.30            # across it (x)
   top_z:       0.14
-  nav_approach: [-2.0, 4.75, -1.5708]
+  # Standoff bumped 0.75->1.10 m from the table (2026-09-07): the place->pickup
+  # re-fetch leg failed Nav2's "Failed to make progress" check 4 times in a row
+  # tonight, never once on any other leg. Only difference on this leg is Nav2
+  # has to plan all the way into a goal sitting close to the table/box cluster,
+  # from a fresh, far-away start each time -- more room here means the planner
+  # isn't hugging the tight goal tolerance right at the end. Still comfortably
+  # inside box_pose_estimator's search_x_max (1.60 m): box currently reads
+  # ~0.94-0.98 m base_link x at 0.75 m standoff, so ~1.1 m standoff keeps it
+  # under ~1.35 m with margin.
+  nav_approach: [-2.0, 5.10, -1.5708]
 
 # ── Box ──────────────────────────────────────────────────────────────────────
 box:

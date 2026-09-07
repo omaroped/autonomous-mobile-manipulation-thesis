@@ -131,18 +131,29 @@ def generate_launch_description():
     nav_nodes = ['planner_server', 'controller_server', 'smoother_server',
                  'behavior_server', 'bt_navigator', 'waypoint_follower']
 
-    # Wait for map_server's OWN service to exist before starting the lifecycle
-    # manager, instead of guessing a fixed delay. The old code waited a flat 6 s;
-    # on a loaded machine (Gazebo + RViz + camera all starting together) that
-    # guess sometimes wasn't enough, the lifecycle manager's change_state call
-    # timed out before map_server had even registered its service, Nav2
-    # bring-up aborted silently, and RViz showed no costmap with the robot
-    # refusing to move — intermittent, because it depended on machine load at
-    # that exact moment. This waits for the real event instead of the clock.
+    # Wait for EVERY node the lifecycle manager is about to transition, not just
+    # map_server, before starting it -- instead of guessing a fixed delay. The
+    # old code waited a flat 6 s; on a loaded machine (Gazebo + RViz + camera
+    # all starting together) that guess sometimes wasn't enough, the lifecycle
+    # manager's change_state call timed out before the node had even registered
+    # its service, Nav2 bring-up aborted silently, and RViz showed no costmap
+    # with the robot refusing to move — intermittent, because it depended on
+    # machine load at that exact moment. This waits for the real event instead
+    # of the clock.
+    #
+    # Fixed 2026-09-06: this previously checked ONLY map_server, then fired the
+    # lifecycle transition for map_server AND all of nav_nodes at once. That
+    # reintroduced the exact race this script exists to prevent, one node later
+    # in the chain -- map_server came up in time, but with more nodes now
+    # starting concurrently (MoveIt, extra perception nodes), planner_server's
+    # own change_state service was not yet registered when the transition
+    # fired: "failed to send response to /planner_server/change_state
+    # (timeout)", leaving controller_server/behavior_server stuck
+    # 'unconfigured' and NavigateToPose never available.
     wait_for_map_server = Node(
         package='limo_car', executable='wait_for_lifecycle_node',
         name='wait_for_map_server', output='screen',
-        arguments=['map_server'])
+        arguments=['map_server'] + nav_nodes)
 
     lifecycle_amcl_node = Node(
         package='nav2_lifecycle_manager', executable='lifecycle_manager',
