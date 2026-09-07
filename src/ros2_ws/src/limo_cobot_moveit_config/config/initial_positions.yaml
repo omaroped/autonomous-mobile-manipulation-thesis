@@ -2,20 +2,27 @@
 #
 # MUST match the real arm's actual current pose before every hardware session, not a
 # placeholder. If this disagrees with reality, MoveIt's first plan is computed from a
-# false starting point and the real arm — driven by arm_bridge.py, which mirrors
-# /joint_states verbatim with no ramped safety move — can snap hard trying to reach it.
+# false starting point and the real arm -- driven by arm_bridge.py, which mirrors
+# /joint_states verbatim with no ramped safety move -- can snap hard trying to reach it.
 #
 # Read from the real arm via `mc.get_angles()` (pymycobot) and converted deg -> rad.
-# Captured 2026-08-10, real arm on /dev/ttyACM0 (Jetson), right after commanding all
-# joints to [0,0,0,0,0,0] post-recalibration. Confirmed by eye: all six notch marks
-# are physically aligned at this pose, matching the near-zero readings below -- the
-# recalibration (M5Stack screen, notch alignment) is verified correct, not just
-# self-consistent in software. Small sub-degree residuals are normal servo
-# deadband/resolution, not error.
+# Updated 2026-08-31, real arm on /dev/ttyACM0 (Jetson).
+#
+# WHY IT WENT STALE BEFORE: the myCobot's servos RELEASE when the robot is powered off,
+# so the arm falls under gravity to wherever it lands -- it does not stay where it was
+# parked. Whatever is written here is therefore wrong again the moment power is cut.
+# Re-read it at the START of every hardware session; do not trust the previous value.
+#
+# Related failure, 2026-08-31: gravity had dropped J4 to 151.34 deg, outside its
+# firmware limit of +/-145. In that state the arm answers get_angles() normally but
+# SILENTLY DISCARDS every motion command, which looks exactly like a dead arm. Recovery
+# is to command a target with all six joints inside their limits. See docs/debug_log.md.
+#
+# Live values this file was generated from (deg): joint2_to_joint1=-0.87, joint3_to_joint2=-0.08, joint4_to_joint3=-0.52, joint5_to_joint4=-0.96, joint6_to_joint5=0.79, joint6output_to_joint6=-0.08
 initial_positions:
-  joint2_to_joint1: -0.0138
-  joint3_to_joint2: 0.0061
-  joint4_to_joint3: -0.0106
+  joint2_to_joint1: -0.0152
+  joint3_to_joint2: -0.0014
+  joint4_to_joint3: -0.0091
   joint5_to_joint4: -0.0168
-  joint6_to_joint5: 0.0122
-  joint6output_to_joint6: 0.0138
+  joint6_to_joint5: 0.0138
+  joint6output_to_joint6: -0.0014
