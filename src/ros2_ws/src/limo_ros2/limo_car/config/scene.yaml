@@ -1,0 +1,145 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# SCENE GEOMETRY — SINGLE SOURCE OF TRUTH
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Every number describing where things are and how big they are lives HERE.
+# nav_pick.launch.py reads this file, derives the docking distances from it,
+# validates that the geometry is physically achievable, and passes the results
+# to nav_pick_orchestrator and tag_dock_estimator as ROS parameters.
+#
+# WHY THIS FILE EXISTS
+# --------------------
+# The place table's geometry used to be duplicated across four files and about
+# ten constants: worlds/final_map.world, TABLE_MAP_X/Y + PLACE_MAP_Y_DOCK +
+# PLACE_DOCK_RANGE + NAV_PLACE_* in the orchestrator, table_side + table_top_z +
+# dock_range in the launch file, and table_side + table_top_z defaults in the
+# estimator. Changing the table meant remembering all ten.
+#
+# On 2026-08-03 the table was shrunk 0.18 -> 0.10 m and only three were updated.
+# The estimator kept computing the drop point as tag_pos - normal * (0.18/2),
+# aiming 4 cm past the table centre. The resulting pose was unreachable, the arm
+# failed IK, and the code released the box in mid-air 34 cm off target.
+# One stale constant destroyed the run.
+#
+# RULE: if a geometric number appears in Python, it is a bug. Put it here.
+#
+# NOT AUTOMATIC: worlds/final_map.world is read by Gazebo, which cannot parse
+# this file. The launch file therefore cross-checks the two at startup and
+# refuses to run if they disagree. Change both together.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── Robot ────────────────────────────────────────────────────────────────────
+# Both values are MEASURED, not assumed. See docs/HARDWARE_TO_MEASURE.md.
+robot:
+  # Front of the chassis ahead of base_link. Measured from
+  # meshes/limo_base_collision_meters.stl, which is mounted with a +pi/2 yaw,
+  # so the mesh's Y extent is the robot's X. This is a HARD floor: no dock
+  # distance below this is physically reachable, the robot just pushes.
+  bumper_x: 0.189
+
+  # Max forward reach of the arm to a top-down grasp pose, in base_link.
+  # Measured two ways: reach_sweep.py over 2295 IK queries, and a docking
+  # distance sweep on the bench. Both give 0.24-0.25 m; 0.24 is the safe value.
+  arm_reach: 0.24
+
+  # Gap left between bumper and table at the dock. Small on purpose -- only
+  # (arm_reach - bumper_x) = 51 mm of reach extends past the robot's own body,
+  # so every mm of clearance is a mm the arm cannot place with.
+  bumper_clearance: 0.010
+
+  # Where the robot is placed when the simulation starts (map frame == world frame
+  # in this scene). SINGLE SOURCE OF TRUTH as of 2026-08-25.
+  #
+  # This value used to be written out in four separate places -- the Gazebo spawn
+  # command, the spawn_y launch argument, the orchestrator's /initialpose publisher,
+  # and AMCL's set_initial_pose block -- of which only two responded to the spawn_y
+  # launch argument. Launching with spawn_y:=5.5 therefore moved the robot but left
+  # AMCL seeded at 7.0, i.e. believing it was 1.5 m from where it actually was. Under
+  # ground-truth localization that is invisible (the map->odom transform is identity
+  # and ignores the robot's pose entirely), which is exactly why it survived: the only
+  # mode the pipeline could run was the mode that cannot notice.
+  #
+  # Everything downstream now derives from here, and the spawn_x/spawn_y/spawn_yaw
+  # launch arguments override it together for off-spawn testing.
+  spawn_pose:
+    x:    -2.0
+    y:     7.0
+    yaw:  -1.5708          # facing -Y, i.e. toward the pickup table
+
+  # base_link height above ground (world frame), MEASURED in Gazebo
+  # (gz model -m mbot -p; = 0.15 URDF - 5mm wheel settle). Confirmed in
+  # docs/HARDWARE_TO_MEASURE.md, docs/experiment_log.md, docs/VERIFICATION_REGISTER.md.
+  # Used to convert a table's WORLD top_z into the base_link-frame height the
+  # arm targets -- the two tables differ (0.14 pickup vs 0.10 place) and the
+  # conversion must be done per table, not assumed constant across them.
+  base_link_ground_z: 0.145
+
+# ── Place table ──────────────────────────────────────────────────────────────
+# Square, with an AprilTag on each vertical face.
+#
+# THE SIDE LENGTH IS CONSTRAINED, NOT CHOSEN. For the arm to reach the table
+# CENTRE while the bumper still clears the near face:
+#
+#     bumper_x + bumper_clearance  <=  dock_range  <=  arm_reach - side/2
+#     0.189 + 0.010                <=  dock_range  <=  0.240 - side/2
+#     =>  side <= 2 * (0.240 - 0.199) = 0.082
+#
+# 0.08 satisfies it with 1 mm to spare. A 0.10 m table does NOT: it forces the
+# arm to place off-centre, which is what px = min(px, arm_reach) was silently
+# doing. The box is 0.04 m, so 0.08 still leaves 20 mm of margin per side.
+place_table:
+  centre_map: [-4.0, -2.0]     # table centre in the map frame (x, y)
+  side:        0.08            # square side length (m) -- see constraint above
+  top_z:       0.10            # table top height above ground (m)
+  tag_id:      0               # AprilTag on the north (+Y) face, which the robot approaches
+  tag_size:    0.065           # printed marker: 416/512 px of the 0.08 m plate.
+                               # Plates were shrunk 0.10 -> 0.08 on 2026-08-03 to fit
+                               # the 0.08 m table faces (they overhung). MUST scale
+                               # with the plate: pose distance is estimated from the
+                               # tag's apparent size, so a stale value shifts every
+                               # dock distance proportionally.
+  nav_approach: [-4.0, -0.50, -1.5708]   # Nav2 goal (x, y, yaw); clear of the
+                                         # table's costmap inflation. The dock
+                                         # covers the remaining ~1.25 m.
+
+# ── Pickup table ─────────────────────────────────────────────────────────────
+# Deliberately NOT square: narrow along the approach axis so the bumper clears,
+# wide across it so the box has lateral margin. Raised to 0.14 m so the box
+# enters the camera's 45.6 deg vertical FOV at dock range -- with a 0.10 m table
+# the box sat below the bottom edge of the image and could not be seen at all.
+pickup_table:
+  # Box offset toward the robot from the table centre, along the approach axis.
+  #
+  # WHY THIS EXISTS. The box used to spawn at the table centre, which the chassis
+  # can never approach closer than bumper_x + bumper_clearance + depth/2 = 0.239 m.
+  # The launch file then set the arm's target to arm_reach (0.240 m) -- i.e. the
+  # grasp was commanded at the arm's maximum measured forward reach, every time.
+  # reach_map.csv shows no top-down pose beyond x = 0.240 is reachable at grasp
+  # height, and only x = 0.22 and 0.24 are reachable there at all: a band two sweep
+  # cells wide, with the target on its outer edge.
+  #
+  # Moving the box 20 mm toward the robot puts the grasp at x = 0.219 -- mid-band,
+  # ~10 mm from the inner edge and ~30 mm from the outer. The dock itself does not
+  # move: the chassis still stops 0.239 m from the table centre with the same
+  # bumper clearance, because the approach is box-relative. Only the arm's target
+  # changes. The box also stays fully on the table (0.08 m deep, 0.04 m box, so
+  # 0.02 m of offset leaves the near face 0.02 m inside the edge).
+  box_offset:  0.02
+  centre_map: [-2.0, 4.0]
+  depth:       0.08            # along the approach axis (y) -- keeps the bumper clear
+  width:       0.30            # across it (x)
+  top_z:       0.14
+  # Standoff bumped 0.75->1.10 m from the table (2026-09-07): the place->pickup
+  # re-fetch leg failed Nav2's "Failed to make progress" check 4 times in a row
+  # tonight, never once on any other leg. Only difference on this leg is Nav2
+  # has to plan all the way into a goal sitting close to the table/box cluster,
+  # from a fresh, far-away start each time -- more room here means the planner
+  # isn't hugging the tight goal tolerance right at the end. Still comfortably
+  # inside box_pose_estimator's search_x_max (1.60 m): box currently reads
+  # ~0.94-0.98 m base_link x at 0.75 m standoff, so ~1.1 m standoff keeps it
+  # under ~1.35 m with margin.
+  nav_approach: [-2.0, 5.10, -1.5708]
+
+# ── Box ──────────────────────────────────────────────────────────────────────
+box:
+  size: 0.04                   # cube edge length (m)

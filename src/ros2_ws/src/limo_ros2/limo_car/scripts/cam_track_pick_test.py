@@ -67,7 +67,10 @@ NAMED_STATES = {
 
 TOPDOWN_QUAT  = (-0.7071, 0.0, 0.0, 0.7071)   # TCP pointing straight down
 HOVER_ABOVE   =  0.12    # metres above box centre during hover
-GRASP_ABOVE   =  0.06    # metres above box centre at grasp
+GRASP_ABOVE   =  0.0    # TCP above box centre at grasp. 0 since 2026-08-01: gripper_tcp was
+                       # moved to the real grasp point (ackermann_with_sensor.xacro),
+                       # so the tool goes straight to the box centre. Was 0.06, which
+                       # was silently correcting for the TCP sitting on the palm.
 
 GRIPPER_OPEN  = [ 0.15,  0.15, -0.15, -0.15, -0.15,  0.15]
 GRIPPER_GRASP = [-0.20, -0.20,  0.20,  0.20,  0.20, -0.20]

@@ -2,8 +2,19 @@
 
 ## Project
 ROS 2 Humble + Gazebo Classic mobile manipulation thesis.
-Robot: Agilex LIMO PRO (Mecanum target) + myCobot 280 M5 arm on Jetson Orin Nano.
-Goal: vertical box stacking with Sim-to-Real drop-rate/error analysis.
+Robot: Agilex LIMO PRO (**differential drive**) + myCobot 280 M5 arm on Jetson Orin Nano.
+Goal: single-box pick → transport → place → stack at a fixed position, with Sim-to-Real
+error analysis.
+
+**NEW SESSION? Read these three first, in order:**
+1. `docs/POSITIONING_ANALYSIS_2026-08-02.md` — current problem, measured numbers, options, recommendation
+2. `docs/experiment_log.md` — every run, pass and fail
+3. `docs/COMMANDS.md` — every command (run / kill / build / test)
+
+Then `docs/HANDOFF_2026-07-29.md` for background. It covers where we are, the working
+rules, every problem hit so far and how it was solved, and the exact next step. Then
+`docs/MASTER_STATUS_AND_PLAN_2026-07-28.md` — the single source of truth for status, the open
+regression, and the plan to submission.
 
 ## Knowledge Base
 A structured knowledge base lives at:
@@ -32,4 +43,12 @@ Always check the relevant category before answering questions about the system.
 
 ## Hardware Notes
 - Dual-GPU laptop: Gazebo must run on NVIDIA dGPU via PRIME offload (see `facts/hardware/hardware-compute-gpu-prime-offload.md`)
-- Drive mode target: Mecanum holonomic (not Ackermann)
+- **Drive mode: differential.** Corrected 2026-07-28 — the registered exposé (2026-07-01) states
+  "AgileX LIMO differential-drive base", the code agrees (`drive_mode` default `diff`,
+  `nav2_limo_diff.yaml`), and the Mecanum claim appears nowhere in the verified 2026-06-15
+  supervisor notes. Ackermann was the original design and is abandoned.
+
+## Before every simulation run
+`./kill_sim.sh` — orphaned nodes from a prior run cause symptoms indistinguishable from real
+bugs (two `base_pin`s fight and oscillate the base; a stale `grasp_attacher` floats a box in
+mid-air; a stale `gzserver` makes edits appear to have no effect).

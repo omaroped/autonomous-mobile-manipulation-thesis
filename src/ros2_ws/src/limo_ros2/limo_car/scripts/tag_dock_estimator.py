@@ -25,7 +25,10 @@ Tag layout (IDs assigned in gen_apriltag.py):
 
 Parameters (live — tune with ros2 param set, no relaunch):
     tag_size   (float, default 0.08) : physical tag side length in metres
-    table_side (float, default 0.18) : place table square side length in metres
+    table_side (float, default 0.10) : place table square side length in metres.
+                                      MUST match place_table in final_map.world — the
+                                      drop point is tag_pos - normal*(table_side/2),
+                                      so a stale value aims the arm past the table.
     table_top_z (float, default 0.10): table top height above ground (world z, m)
 
 Note on coordinate convention:
@@ -50,10 +53,21 @@ from visualization_msgs.msg import Marker
 import tf2_ros
 from tf2_geometry_msgs import do_transform_point
 
-from cv_bridge import CvBridge
-
 TARGET_FRAME = 'base_link'
 TAG_IDS_VALID = {0, 1, 2, 3}   # IDs we placed on the four table faces
+
+# cv_bridge deliberately NOT imported -- its prebuilt Boost extension is compiled
+# against NumPy 1.x, and `from cv_bridge import CvBridge` raises
+# `AttributeError: _ARRAY_API not found` with NumPy 2.2.6 installed, which took
+# this node down at startup entirely (2026-09-06). Same fix as
+# box_pose_estimator.py: decode the Image message directly.
+
+
+def _imgmsg_to_array(msg):
+    """sensor_msgs/Image -> numpy array, for the encodings this node sees."""
+    if msg.encoding in ('bgr8', 'rgb8'):
+        return np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, 3)
+    raise ValueError(f'_imgmsg_to_array: unsupported encoding {msg.encoding!r}')
 
 
 class TagDockEstimator(Node):
@@ -63,19 +77,22 @@ class TagDockEstimator(Node):
 
         # ── Live params (tune with ros2 param set) ────────────────────────────
         self.declare_parameter('tag_size',    0.08)
-        self.declare_parameter('table_side',  0.18)
+        self.declare_parameter('table_side',  0.10)   # MUST match place_table in final_map.world
         self.declare_parameter('table_top_z', 0.10)
 
         # ── State ─────────────────────────────────────────────────────────────
-        self._bridge        = CvBridge()
         self._fx = self._fy = self._cx = self._cy = None
         self._cam_frame     = None
         self._cam_matrix    = None
         self._dist_coeffs   = np.zeros((4, 1))  # Gazebo camera: no distortion
 
-        # cv2 4.5.x API (older than generateImageMarker)
+        # OpenCV 5.0: DetectorParameters_create() and the free function
+        # aruco.detectMarkers() were both removed in favour of the ArucoDetector
+        # object API. Fixed 2026-09-06 -- this node could not even construct
+        # before, independent of the cv_bridge/NumPy issue above.
         self._dictionary    = aruco.getPredefinedDictionary(aruco.DICT_APRILTAG_36H11)
-        self._det_params    = aruco.DetectorParameters_create()
+        self._det_params    = aruco.DetectorParameters()
+        self._detector      = aruco.ArucoDetector(self._dictionary, self._det_params)
 
         # Latched map-frame pose (tag + drop point) — same trick as box_pose_estimator
         self._last_tag_map   = None   # PointStamped in map
@@ -119,13 +136,17 @@ class TagDockEstimator(Node):
             return
 
         try:
-            bgr = self._bridge.imgmsg_to_cv2(msg, 'bgr8')
+            bgr = _imgmsg_to_array(msg)
+            if msg.encoding == 'rgb8':
+                # sim camera plugin (sensor.xacro, format R8G8B8) publishes rgb8;
+                # cv_bridge's 'bgr8' request used to do a real channel swap here.
+                bgr = bgr[:, :, ::-1]
         except Exception as e:
             self.get_logger().warn(f'rgb convert: {e}', throttle_duration_sec=5.0)
             return
 
         grey = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-        corners, ids, _ = aruco.detectMarkers(grey, self._dictionary, parameters=self._det_params)
+        corners, ids, _ = self._detector.detectMarkers(grey)
 
         if ids is None or len(ids) == 0:
             self.get_logger().info('No AprilTag visible.', throttle_duration_sec=3.0)
@@ -144,7 +165,14 @@ class TagDockEstimator(Node):
         if best_idx < 0:
             return
 
-        tag_id   = int(ids[best_idx][0])
+        # ids.flatten(), not ids[best_idx][0]: OpenCV 5's ArucoDetector.detectMarkers
+        # returns ids shaped (N,) rather than the old free function's (N,1), so
+        # ids[best_idx] is already a scalar and indexing it with [0] raised
+        # "IndexError: invalid index to scalar variable" the first time this line
+        # ever ran (2026-09-06 -- this node crashed at import before that, for
+        # weeks, so the bug was never exercised). flatten() matches the loop above
+        # and is correct for either array shape.
+        tag_id   = int(ids.flatten()[best_idx])
         tag_size = float(self.get_parameter('tag_size').value)
 
         # ── solvePnP: tag frame with +Z pointing out of the tag face ─────────

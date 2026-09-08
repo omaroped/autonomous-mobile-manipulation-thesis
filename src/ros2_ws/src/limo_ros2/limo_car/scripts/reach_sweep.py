@@ -49,17 +49,28 @@ class ReachSweep(Node):
             return
         
         # Grid settings
-        xs = [round(0.12 + i * 0.02, 2) for i in range(9)] # 0.12 to 0.28 step 0.02
-        ys = [round(-0.08 + i * 0.04, 2) for i in range(5)] # -0.08 to 0.08 step 0.04
-        zs = [round(0.03 + i * 0.02, 2) for i in range(9)] # 0.03 to 0.19 step 0.02
+        # Grid extended 2026-08-02. The old one stopped at x=0.28 and z=0.03, so it
+        # could not answer the question that matters: how far FORWARD can the tool reach
+        # at the BOX's height? The box centre sits at base_link z = -0.021, which the old
+        # grid did not even include. Now sweeps out to 0.46 m — past the ~0.39 m the
+        # camera needs — so we can see whether reach and vision overlap at all.
+        xs = [round(0.14 + i * 0.02, 2) for i in range(17)]  # 0.14 .. 0.46
+        ys = [round(-0.08 + i * 0.04, 2) for i in range(5)]  # -0.08 .. 0.08
+        # z extended to +0.20 on 2026-08-25 for STACKING. The original sweep stopped
+        # at +0.10, but a 3-level stack puts the arm far above that:
+        #   level 0 hover +0.075 (swept)   level 1 hover +0.115   level 2 hover +0.155
+        # Both upper hovers were outside the characterized set, so stacking above
+        # level 0 was being attempted with no reachability evidence at all. The
+        # existing data also shows the band starting to CLOSE at the top -- the outer
+        # edge pulls in from 0.24 to 0.22 between z = +0.08 and +0.10 -- so the upper
+        # hovers may well be unreachable. This sweep settles it.
+        zs = [round(-0.06 + i * 0.02, 2) for i in range(14)]  # -0.06 .. 0.20
         
         # Orientations
         orientations = [
             ('top-down', (-0.7071, 0.0, 0.0, 0.7071)),
-            ('frontal', (0.707, 0.0, -0.707, 0.0)),
             ('tilt-75', (0.793, 0.0, -0.609, 0.0)),
             ('tilt-55', (0.891, 0.0, -0.454, 0.0)),
-            ('side-grasp', (0.5, -0.5, 0.5, -0.5))
         ]
         output_path = '/home/omar/Desktop/Thesisorg/docs/references/data/reach_map.csv'
         self.get_logger().info(f"Starting reach sweep. Saving results to {output_path}...")

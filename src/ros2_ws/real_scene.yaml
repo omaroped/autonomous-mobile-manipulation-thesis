@@ -1,0 +1,14 @@
+# real_scene.yaml — real-world table positions in the lab room, in the `map` frame.
+# Updated 2026-08-25 after lab room SLAM mapping session (~/lab_map.pgm/.yaml).
+
+pickup_table:
+  map_x: 0.549
+  map_y: 0.067
+  yaw_deg: 96.0
+
+place_table:
+  map_x: -0.010
+  map_y: 6.239
+  yaw_deg: 88.2
+
+map_file: /home/agilex/lab_map.yaml

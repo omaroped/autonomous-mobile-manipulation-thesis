@@ -42,6 +42,22 @@ def generate_launch_description():
         'use_gzclient', default_value='true',
         description='Whether to launch Gazebo client (GUI)')
 
+    # spawn_x and spawn_yaw were hardcoded in the spawn command until 2026-08-25,
+    # so only spawn_y could be moved -- and moving it desynchronised the robot from
+    # AMCL's seed, which is written from the same pose. All three are arguments now
+    # and nav_pick.launch.py passes them from scene.yaml's robot.spawn_pose.
+    odometry_source_arg = DeclareLaunchArgument(
+        'odometry_source', default_value='1',
+        description='1 = WORLD (exact odom), 0 = ENCODER (realistic drift; '
+                    'requires localization:=amcl)')
+
+    spawn_x_arg = DeclareLaunchArgument(
+        'spawn_x', default_value='-2.0',
+        description='Robot spawn X in the map/world frame')
+    spawn_yaw_arg = DeclareLaunchArgument(
+        'spawn_yaw', default_value='-1.5708',
+        description='Robot spawn yaw (rad) in the map/world frame')
+
     spawn_y_arg = DeclareLaunchArgument(
         'spawn_y', default_value='7.0',
         description='Robot spawn Y (m). 7.0 = at the table (isolated grasp test); '
@@ -71,7 +87,17 @@ def generate_launch_description():
     # "gazebo-ros2-control-eol-incompatibility").
     from ament_index_python.packages import get_package_prefix
     patched_gzros2_lib = os.path.join(get_package_prefix('gazebo_ros2_control'), 'lib')
-    plugin_path = patched_gzros2_lib + pathsep + '/opt/ros/humble/lib'
+    # libgazebo_grasp_plugin.so — the real fixed-joint grasp (see
+    # gazebo/mycobot_ros2_control.xacro). Gazebo only loads it if its install lib
+    # dir is on GAZEBO_PLUGIN_PATH.
+    # Path is derived from a SIBLING package rather than looked up directly:
+    # gazebo_grasp_plugin is a plain-CMake (non-ament) package, so colcon installs
+    # it but never registers it in the ament index — get_package_prefix() on it
+    # raises PackageNotFoundError even though the .so is built and present.
+    grasp_plugin_lib = os.path.join(
+        os.path.dirname(get_package_prefix('limo_car')), 'gazebo_grasp_plugin', 'lib')
+    plugin_path = (patched_gzros2_lib + pathsep + grasp_plugin_lib
+                   + pathsep + '/opt/ros/humble/lib')
     if 'GAZEBO_MODEL_PATH' in environ:
         model_path  += pathsep + environ['GAZEBO_MODEL_PATH']
     if 'GAZEBO_PLUGIN_PATH' in environ:
@@ -119,7 +145,8 @@ def generate_launch_description():
             'use_sim_time': 'true',
             'world': world_config,
             'drive_mode': LaunchConfiguration('drive_mode'),
-            'use_camera': LaunchConfiguration('use_camera')
+            'use_camera': LaunchConfiguration('use_camera'),
+            'odometry_source': LaunchConfiguration('odometry_source')
         }.items()
     )
 
@@ -133,7 +160,10 @@ def generate_launch_description():
              '-entity', 'mbot',
              # z≈0 so the wheels start essentially on the ground; with real diff-drive
              # physics the base settles onto its wheels under gravity (small, clean drop).
-             '-x', '-2.0', '-y', LaunchConfiguration('spawn_y'), '-z', '0.0', '-Y', '-1.5708'],
+             '-x', LaunchConfiguration('spawn_x'),
+             '-y', LaunchConfiguration('spawn_y'),
+             '-z', '0.0',
+             '-Y', LaunchConfiguration('spawn_yaw')],
         output='screen'
     )
 
@@ -162,7 +192,10 @@ def generate_launch_description():
     return LaunchDescription([
         world_arg,
         rviz_arg,
+        odometry_source_arg,
+        spawn_x_arg,
         spawn_y_arg,
+        spawn_yaw_arg,
         use_rviz_arg,
         use_gzclient_arg,
         drive_mode_arg,

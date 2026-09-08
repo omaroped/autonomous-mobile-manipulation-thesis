@@ -206,15 +206,35 @@
       </link>
     </model>
     <!-- Pickup table: 30x15cm, 10cm tall. Narrow in Y so robot front clears it at 0.17m stop. -->
+    <!-- PICKUP TABLE — scaled +40% on 2026-08-02 (was 0.3 x 0.08 x 0.10, top at 0.10).
+         WHY: the depth camera is mounted 0.065 m above base_link looking straight
+         forward, and the box is a 4 cm cube. At the 0.24 m dock the box sat 31.6 deg
+         below the camera axis while the camera only sees 22.8 deg down — the box was
+         BELOW THE BOTTOM EDGE OF THE IMAGE, not merely too close.
+         HEIGHT ONLY: 0.10 -> 0.14 (+40%). Footprint stays 0.3 x 0.08.
+         Chosen so the WHOLE box is visible from 0.266 m, which matches the distance
+         observed by hand (~0.27 m) as the last point the camera sees all of it.
+         CHOSEN DELIBERATELY over the alternatives: the real camera cannot be tilted or
+         re-mounted, so raising the workpiece is the only way to bring the box into the
+         camera's vertical field of view at grasp range. At this height the box sits
+         14.4 deg below the camera axis at a 0.24 m dock, against 22.8 deg of downward
+         view — comfortably in frame, where at the original 0.10 m table it was 32.7 deg
+         below and therefore off the bottom of the image entirely.
+         KNOWN COST: it consumes vertical headroom above the box, so the lift must be
+         kept short (see grip_bench's degrading lift). Grasp reliability measured 2/3 at
+         this height against 5/5 at 0.10 m — recovering that is an open task.
+         NOTE: this does NOT improve reach. The measured envelope (reach_map.csv) is
+         0.24 m at every height from -0.04 to +0.08 in base_link, dropping to 0.22 at
+         +0.10, so the arm limit is unchanged. -->
     <model name='pickup_table'>
       <static>1</static>
-      <pose>-2 4 0.05 0 0 0</pose>
+      <pose>-2 4 0.07 0 0 0</pose>
       <link name='link'>
         <collision name='col'>
-          <geometry><box><size>0.3 0.08 0.1</size></box></geometry>
+          <geometry><box><size>0.3 0.08 0.14</size></box></geometry>
         </collision>
         <visual name='vis'>
-          <geometry><box><size>0.3 0.08 0.1</size></box></geometry>
+          <geometry><box><size>0.3 0.08 0.14</size></box></geometry>
           <material>
             <ambient>0.6 0.4 0.2 1</ambient>
             <diffuse>0.6 0.4 0.2 1</diffuse>
@@ -228,7 +248,12 @@
          Reachable from any of 4 sides (arm reach 0.24-0.28 m > half-side 0.09 m).
          AprilTag 36h11 face plates (ID 0-3) on each vertical face for fiducial docking.
          Tag plates are 0.001 m thin so they don't affect collision geometry.
-         Table top at z=0.10; tag centres at z=0.075 (mid-face height). -->
+         Table top at z=0.10; tag centres at z=0.060, so the plate spans [0.02, 0.10] —
+         flush with the table top, not poking above it. (Was z=0.075, spanning
+         [0.035, 0.115]: the top edge sat 1.5 cm ABOVE the table surface — visibly
+         sticking out. drop_map.point.z in tag_dock_estimator.py comes from the
+         separate table_top_z parameter, not from this pose, so moving the plate
+         does not affect the computed drop point.) -->
     <model name='place_table'>
       <static>1</static>
       <pose>-4 -2 0 0 0 0</pose>
@@ -236,10 +261,10 @@
       <link name='body'>
         <pose>0 0 0.05 0 0 0</pose>
         <collision name='col'>
-          <geometry><box><size>0.18 0.18 0.10</size></box></geometry>
+          <geometry><box><size>0.08 0.08 0.10</size></box></geometry>
         </collision>
         <visual name='vis'>
-          <geometry><box><size>0.18 0.18 0.10</size></box></geometry>
+          <geometry><box><size>0.08 0.08 0.10</size></box></geometry>
           <material>
             <ambient>0.55 0.55 0.55 1</ambient>
             <diffuse>0.55 0.55 0.55 1</diffuse>
@@ -253,9 +278,9 @@
            Face normal outward (+Y = north, -Y = south, +X = east, -X = west).
            Tag ID 0: North face (+Y, yaw=0) -->
       <link name='tag_north'>
-        <pose>0 0.091 0.075 0 0 0</pose>
+        <pose>0 0.041 0.060 0 0 0</pose>
         <visual name='vis'>
-          <geometry><box><size>0.10 0.001 0.10</size></box></geometry>
+          <geometry><box><size>0.08 0.001 0.08</size></box></geometry>
           <material>
             <script>
               <uri>model://limo_car/media/materials/scripts/apriltag.material</uri>
@@ -268,9 +293,9 @@
       </link>
       <!-- Tag ID 1: South face (-Y, yaw=π) -->
       <link name='tag_south'>
-        <pose>0 -0.091 0.075 0 0 3.14159</pose>
+        <pose>0 -0.041 0.060 0 0 3.14159</pose>
         <visual name='vis'>
-          <geometry><box><size>0.10 0.001 0.10</size></box></geometry>
+          <geometry><box><size>0.08 0.001 0.08</size></box></geometry>
           <material>
             <script>
               <uri>model://limo_car/media/materials/scripts/apriltag.material</uri>
@@ -283,9 +308,9 @@
       </link>
       <!-- Tag ID 2: East face (+X, yaw=-π/2) -->
       <link name='tag_east'>
-        <pose>0.091 0 0.075 0 0 -1.5708</pose>
+        <pose>0.041 0 0.060 0 0 -1.5708</pose>
         <visual name='vis'>
-          <geometry><box><size>0.10 0.001 0.10</size></box></geometry>
+          <geometry><box><size>0.08 0.001 0.08</size></box></geometry>
           <material>
             <script>
               <uri>model://limo_car/media/materials/scripts/apriltag.material</uri>
@@ -298,9 +323,9 @@
       </link>
       <!-- Tag ID 3: West face (-X, yaw=+π/2) -->
       <link name='tag_west'>
-        <pose>-0.091 0 0.075 0 0 1.5708</pose>
+        <pose>-0.041 0 0.060 0 0 1.5708</pose>
         <visual name='vis'>
-          <geometry><box><size>0.10 0.001 0.10</size></box></geometry>
+          <geometry><box><size>0.08 0.001 0.08</size></box></geometry>
           <material>
             <script>
               <uri>model://limo_car/media/materials/scripts/apriltag.material</uri>
@@ -328,8 +353,22 @@
          for sim dynamics, not a precision inertia calc).
          Same tuned friction/contact ODE params as before (soft contact prevents
          jitter/tunnelling on the table surface). -->
+    <!-- REGRESSION TEST 2026-07-28 — collision reverted to a PRIMITIVE box.
+         The pipeline completed successfully end-to-end on 2026-07-02 (see
+         data/metrics_20260702_003437.csv and _232206.csv: pick/transport/dock/place
+         all True) with a primitive-collision box 0.035x0.035x0.04 at pose -2.00 4 0.12.
+         It then failed 17 consecutive runs after the 3-box self-centering redesign
+         swapped the collision to the triangle mesh stack_box.stl at -2.08 4 0.12.
+         Triangle-mesh collision on a small, light, grasped object is a known ODE
+         instability source and matches the observed "box launches / drops on lift".
+         The mesh BODY is 0.035x0.035x0.040 (gen_stack_box.py) — identical to the
+         primitive — so BOX_HALF_H / BOX_HEIGHT in the orchestrator stay valid.
+         The mesh is kept for VISUAL only, so the box still looks the same.
+         If this restores success, the mesh collision was the regression. -->
     <model name='stack_box_0'>
-      <pose>-2.08 4 0.12 0 0 0</pose>
+      <!-- z = table top 0.14 + half box height 0.02 = 0.16.
+           base_link sits at world 0.145, so the box centre is at base_link z = +0.015. -->
+      <pose>-2.00 4.02 0.16 0 0 0</pose>
       <link name='link'>
         <inertial>
           <mass>0.04</mass>
@@ -340,7 +379,10 @@
           </inertia>
         </inertial>
         <collision name='col'>
-          <geometry><mesh><uri>model://limo_car/meshes/stack_box.stl</uri><scale>1 1 1</scale></mesh></geometry>
+          <!-- PRIMITIVE, exactly as in the last known-working commit 08e8af4.
+               Contact params below are byte-identical to that version, so the
+               collision SHAPE is the only remaining difference. -->
+          <geometry><box><size>0.035 0.035 0.04</size></box></geometry>
           <surface>
             <friction>
               <ode><mu>1.0</mu><mu2>1.0</mu2></ode>
@@ -366,8 +408,26 @@
       </link>
     </model>
 
+    <!-- ── stack_box_1 / stack_box_2 ──────────────────────────────────────
+         Added 2026-08-25 for three-box stacking. Identical geometry, mass and
+         contact parameters to stack_box_0, and the SAME blue material: the HSV
+         detector must see all three as the same object class, so any colour
+         difference would silently change which boxes are detectable.
+
+         Layout across the pickup table (0.30 m wide, spans map x [-2.15, -1.85]):
+           stack_box_1  x = -2.10     stack_box_0  x = -2.00     stack_box_2  x = -1.90
+         Box 0 keeps the exact position verified over three runs on 2026-08-25;
+         the new boxes are additive, 0.065 m clear of their neighbours and 0.032 m
+         inside the table edges. All three sit at y = 4.02, i.e. the same
+         pickup_table.box_offset the geometry fix established.
+
+         They do NOT all need to be reachable at once: the stacking loop navigates
+         back to the pickup table and re-docks for every box, so each one is
+         centred and grasped from a fresh dock. -->
     <model name='stack_box_1'>
-      <pose>-2.00 4 0.12 0 0 0</pose>
+      <!-- z = table top 0.14 + half box height 0.02 = 0.16.
+           base_link sits at world 0.145, so the box centre is at base_link z = +0.015. -->
+      <pose>-2.10 4.02 0.16 0 0 0</pose>
       <link name='link'>
         <inertial>
           <mass>0.04</mass>
@@ -378,7 +438,10 @@
           </inertia>
         </inertial>
         <collision name='col'>
-          <geometry><mesh><uri>model://limo_car/meshes/stack_box.stl</uri><scale>1 1 1</scale></mesh></geometry>
+          <!-- PRIMITIVE, exactly as in the last known-working commit 08e8af4.
+               Contact params below are byte-identical to that version, so the
+               collision SHAPE is the only remaining difference. -->
+          <geometry><box><size>0.035 0.035 0.04</size></box></geometry>
           <surface>
             <friction>
               <ode><mu>1.0</mu><mu2>1.0</mu2></ode>
@@ -405,7 +468,9 @@
     </model>
 
     <model name='stack_box_2'>
-      <pose>-1.92 4 0.12 0 0 0</pose>
+      <!-- z = table top 0.14 + half box height 0.02 = 0.16.
+           base_link sits at world 0.145, so the box centre is at base_link z = +0.015. -->
+      <pose>-1.90 4.02 0.16 0 0 0</pose>
       <link name='link'>
         <inertial>
           <mass>0.04</mass>
@@ -416,7 +481,10 @@
           </inertia>
         </inertial>
         <collision name='col'>
-          <geometry><mesh><uri>model://limo_car/meshes/stack_box.stl</uri><scale>1 1 1</scale></mesh></geometry>
+          <!-- PRIMITIVE, exactly as in the last known-working commit 08e8af4.
+               Contact params below are byte-identical to that version, so the
+               collision SHAPE is the only remaining difference. -->
+          <geometry><box><size>0.035 0.035 0.04</size></box></geometry>
           <surface>
             <friction>
               <ode><mu>1.0</mu><mu2>1.0</mu2></ode>
@@ -441,6 +509,10 @@
         <self_collide>0</self_collide>
       </link>
     </model>
+
+    <!-- stack_box_1 and stack_box_2 removed — single-box testing for now. Re-add
+         them (and revert _remaining_boxes in nav_pick_orchestrator.py) once
+         one-box grasping is reliable. -->
 
     <gui fullscreen="0">
       <camera name="user_camera">

@@ -1,0 +1,184 @@
+###############################################################################
+# hardware_calibration.yaml — MEASURED on the physical robot, 2026-08-31.
+#
+# WHY THIS FILE EXISTS. Until today every geometric constant the pipeline used
+# came from Gazebo (config/scene.yaml, the xacros). Those describe a MODEL. This
+# file describes the ROBOT. Where the two disagree, the numbers here are the ones
+# taken with a tape measure and the arm's own encoders, and every entry records
+# how it was obtained so it can be re-derived or challenged.
+#
+# NOTHING HERE APPLIES TO SIMULATION. scene.yaml stays the source of truth for
+# Gazebo. Loading this on the sim side would inject real-world error that does
+# not exist there.
+#
+# Full run-by-run evidence: docs/experiment_log.md real_hardware_07..15,
+# docs/debug_log.md 2026-08-31.
+###############################################################################
+
+# ── Odometry ────────────────────────────────────────────────────────────────
+odometry:
+  # True distance travelled = odometry reading x (1/scale). The base FIRMWARE
+  # reports velocity already converted to m/s (limo_driver.cpp:246), so there is
+  # no wheel radius in ROS to correct -- this must be applied by the consumer.
+  # MEASURED: 10 runs over two distances, tape-measured against floor marks.
+  #   0.30 m x5 -> odom 1.506 m, tape 1.585 m -> 1.0525
+  #   0.60 m x5 -> odom 3.004 m, tape 3.162 m -> 1.0526     (agree to 0.01%)
+  # Error DOUBLED with distance => scale error, not stop-latency coasting.
+  # CAUSE: rubber TRACKS over the wheels. Effective rolling diameter ~94.7 mm
+  # vs the 90 mm bare wheel the firmware assumes (track ~3.5 mm thick,
+  # compressing ~1.1 mm/side under load). Sim models bare wheels, so this gap
+  # is absent there by construction.
+  # VERIFIED: commanded 0.57 m (= 0.60 x 0.950) -> tape read exactly 60.0 cm.
+  distance_scale: 1.0526
+  drive_command_multiplier: 0.950     # = 1 / distance_scale, what _drive_forward applies
+  # Verified in REVERSE too (2026-09-03): commanded 2.00 m backwards gave 2.010 m
+  # real, 0.5% error. The scale transfers to both directions.
+  #
+  # HEADING MUST BE HELD CLOSED-LOOP. Driving with linear.x alone lets any track
+  # asymmetry integrate into a visible curve -- Omar spotted a consistent leftward
+  # pull. Correcting angular.z against odometry yaw (K_YAW 1.6, clamp 0.35 rad/s)
+  # reduces it to 1-2 mm per metre with 0.0 deg heading change, measured over a 2 m
+  # out-and-back. This is not a motor calibration problem; it was an open loop.
+  #
+  # ROTATION IN PLACE IS STILL UNMEASURED. Tracks skid when they turn, and none of
+  # the above says anything about the accuracy of a commanded rotation.
+
+# ── Arm: coordinate conversion ──────────────────────────────────────────────
+# pymycobot get_coords()/send_coords() work in the ARM's own frame, in mm.
+# These convert a point in base_link (metres) into that frame.
+arm:
+  # arm_y = -(base_link_x + base_to_arm_x) * 1000
+  # arm_x =   base_link_y * 1000
+  # base_to_arm_x is still the SIMULATION's mount offset (ackermann_with_sensor
+  # .xacro mycobot_base_joint, xyz="-0.03 0 0.02"), NOT independently measured.
+  # CHECKED 2026-08-31: the arm grasped a cube at arm_y=-221.1 => this model puts
+  # it at base_link x=0.191; tape (front wheel centre -> cube 0.085 m, plus the
+  # 0.10 m half-wheelbase from the LIMO PRO manual) gives 0.185. Agreement 6 mm,
+  # inside the measurement's own uncertainty. Good enough to use; refine later.
+  base_to_arm_x: 0.030
+
+  # Height of the FINGERS above the floor:
+  #     finger_height_m = coords_z_mm / 1000 + finger_z_offset
+  # MEASURED directly: with coords_z = 72.5 mm the fingers sat 125 mm above the
+  # floor by tape => offset 52.5 mm. get_coords() reports the FLANGE, not the
+  # fingertips; the gripper hangs below it, which is the bulk of this number.
+  finger_z_offset: 0.0525
+
+  # The arm lands BELOW commanded height by roughly this much at ~0.22 m
+  # extension (cmd 75->67.9, 50->42.6, 25->16.2, 0->-8.1). Systematic, so
+  # compensate by commanding this much higher. Re-check at other extensions.
+  z_undershoot: 0.008
+
+  # Gripper vertical, fingers PARALLEL TO THE CUBE FACES. rz=-90 and rz=0 both
+  # point down but grip a square cube diagonally -- rz=-45 aligns the jaws.
+  # rx/ry point the gripper straight down; rz is the wrist angle about the vertical.
+  # -38, not -45. -45 was a first approximation that beat -90 and 0 on a square cube,
+  # but left the finger faces rotated slightly clockwise (from above) relative to the
+  # cube's faces, so the fingers met it near the corners -- grasps closed at 41-48 and
+  # only settled to 38 during the lift. Verified visually at -38: faces parallel.
+  grasp_orientation: {rx: -180.0, ry: 0.0, rz: -38.0}
+
+  # Shift every target this far toward the robot's LEFT. CALIBRATED 2026-09-04 by
+  # parking the open gripper over the cube and inspecting: it consistently settled
+  # to the RIGHT, and +10 mm centres it. Cause not isolated -- either perception
+  # reads slightly right of true, or the finger line is laterally offset from the
+  # point get_coords() reports (the gripper carries a 45 deg wrist rotation). Drive
+  # trials put the arm within 1-4 mm of commanded y, which argues against a servo
+  # bias. Isolating it needs a target of known position measured without the camera.
+  lateral_comp: 0.010
+
+  # Grasp this far ABOVE the object's centre. The grasp point is the midpoint
+  # between the fingers, but the TIPS extend below it; targeting the centre drove
+  # the tips onto the table, loading the joints and taking up their backlash. The
+  # value is what must be ASKED -- the arm undershoots commanded height by ~5 mm at
+  # grasp extension -- so ~7 mm is actually delivered.
+  grasp_raise: 0.012
+
+  # Height corrections are commanded 1:1 above this, and only multiplied by the
+  # convergence gain below it. Applying the gain to the full ~60 mm hover-to-grasp
+  # descent commanded 84 mm and drove the fingers into the object.
+  gain_band: 0.015
+
+  # THE DESCENT MUST HOLD THE COMMANDED x/y, NOT THE MEASURED ONE. Re-reading the
+  # arm's position each iteration and re-sending it makes every pass adopt wherever
+  # the arm settled as the new goal; the shortfall then compounds. Observed as three
+  # visible steps walking the gripper ~12 mm back toward the robot AFTER it had
+  # arrived correctly, which also prevented the height loop from ever converging.
+
+  # Max forward reach at grasp height, MEASURED by sweeping send_coords targets
+  # until the arm stopped tracking (260 and 270 mm commands both stalled at the
+  # same pose). scene.yaml's arm_reach: 0.24 is a GAZEBO value and is 12 mm
+  # optimistic. Best tracking accuracy was 0.207-0.216 m (err 6.7-7.3 mm).
+  max_reach_base_link_x: 0.228
+
+  # J2 folds further negative as the arm reaches lower/further. At -121 deg the
+  # upper link pressed on the depth camera (observed). Abort any motion below
+  # this. Reference: fingers at 12.0 cm -> J2 -61; 9.5 cm -> -70; 6.9 cm -> -82;
+  # 4.4 cm -> -94. Nothing in a normal grasp (fingers ~14.5 cm) goes near it.
+  j2_min_deg: -85.0
+
+  # send_coords() has NO collision model -- it does not know the camera, the
+  # chassis or the table exist. It solved one target by folding J2 to -121 deg.
+  # Guard every commanded pose, or plan through MoveIt, which does check.
+  ik_is_collision_blind: true
+
+# ── Chassis ─────────────────────────────────────────────────────────────────
+chassis:
+  # base_link -> frontmost point of the chassis. MEASURED 2026-08-31: front wheel
+  # centre -> front of chassis = 0.061 m, plus the 0.100 m half-wheelbase (LIMO
+  # PRO manual, 200 mm) = 0.161 m. Independently confirmed by the LIMO PRO's own
+  # spec: 322 mm long, base_link at the wheelbase midpoint, 322/2 = 161 mm.
+  #
+  # scene.yaml says bumper_x: 0.189 -- 28 mm TOO LONG. That value was derived from
+  # meshes/limo_base_collision_meters.stl. Mesh scaling in this project is already
+  # known to be unreliable (the VISUAL body mesh is deliberately scaled 0.0012
+  # rather than 0.001, and the wheels 1.2x), so a collision mesh that overstates
+  # the body by 28 mm is consistent with that.
+  #
+  # CONSEQUENCE: the dock window is far wider than the simulation implies.
+  #   sim-derived   0.210 - 0.228 m  (18 mm)
+  #   measured      0.193 - 0.228 m  (35 mm)   [bumper 0.161 + 20 mm clearance
+  #                                             + half a 24.7 mm cube, up to the
+  #                                             arm's measured 0.228 reach]
+  # STOP_DISTANCE = 0.22 sits comfortably inside the measured window.
+  #
+  # NOT changed in scene.yaml: that file describes the Gazebo model, whose
+  # collision mesh really is 0.189 long. Changing it would desync sim from its
+  # own geometry. The hardware pipeline should read the value below instead.
+  bumper_x: 0.161
+
+# ── Gripper ─────────────────────────────────────────────────────────────────
+gripper:
+  open_value: 100
+  close_value: 0
+  # get_gripper_value() needs a gripper_type argument (1/3/4) in this pymycobot
+  # version, or it raises MyCobotDataException. Type 4 works on this arm.
+  readback_type: 4
+  # GRASP DETECTION. Closing on air settles to 0; closing on the 24.7 mm cube
+  # stalls at 37 and holds. This is the ONLY grasp verification available on
+  # hardware -- the sim's physics weld and finger-stall detection do not exist
+  # here. The value also measures OBJECT WIDTH, so a wrong grasp (finger on the
+  # rim, two cubes, empty close) reads differently and is detectable.
+  closed_on_air: 0
+  holding_cube_24_7mm: 37
+  grasp_threshold: 15               # above this = holding something
+  # MUST poll until the reading stops changing: an EMPTY gripper also reads
+  # 36-37 at t+4 s while still travelling. Sampling at a fixed time misreads it.
+  settle_poll: true
+
+# ── Depth camera ────────────────────────────────────────────────────────────
+camera:
+  # base_link -> camera lens, MEASURED 2026-08-26 (see real_robot.launch.py).
+  # ROTATION IS STILL ASSUMED IDENTITY, never measured.
+  offset: {x: 0.119, y: 0.0, z: 0.040}
+  # MEASURED blind spot: depth flickers at 0.31 m from the lens and drops out
+  # entirely below 0.25 m. Documented spec is 0.30 m -- close agreement.
+  min_reliable_range: 0.31
+  dropout_range: 0.25
+  # CONSEQUENCE, and it drives the whole architecture: the camera cannot see
+  # closer than base_link x ~0.37, and the arm cannot reach beyond 0.228. THE
+  # TWO WORKSPACES DO NOT OVERLAP. There is no pose where the camera sees the
+  # cube and the arm can reach it, so the target MUST be latched at range and
+  # the final approach driven blind on odometry.
+  # Position accuracy: +-1 mm at 0.95 m and 1.53 m. A +4.1 cm outlier at 0.45 m
+  # was attributed to a rough tape read and has NOT been re-measured.

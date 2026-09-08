@@ -1,0 +1,31 @@
+# EAI T-mini Pro as mounted on this LIMO PRO.
+# Deploy to: ~/limo_ros2_ws/src/ydlidar_ros2_driver/params/limo_tminipro.yaml
+#
+# Values aligned with the simulation (limo_car/gazebo/sensor.xacro) so sim and
+# real produce comparable scans -- required for the Sim-to-Real comparison.
+# angle +/-100 deg is MEASURED: a cover plate behind the centred lidar blocks
+# symmetrically from +96.9 deg. See docs/troubleshooting_lidar_no_scan.md.
+ydlidar_ros2_driver_node:
+  ros__parameters:
+    port: /dev/ydlidar        # udev symlink; survives USB re-enumeration
+    frame_id: laser_link      # matches the sim URDF laser link
+    ignore_array: ""
+    baudrate: 230400
+    lidar_type: 1
+    device_type: 0
+    sample_rate: 4
+    intensity_bit: 8
+    abnormal_check_count: 4
+    fixed_resolution: true
+    reversion: false
+    inverted: true
+    auto_reconnect: true
+    isSingleChannel: false
+    intensity: true
+    support_motor_dtr: false
+    angle_max: 100.0          # MEASURED self-occlusion limit
+    angle_min: -100.0
+    range_max: 12.0           # T-mini Pro spec (stock TminiPro.yaml wrongly says 64.0)
+    range_min: 0.10           # operational choice; sensor capability is 0.02
+    frequency: 10.0
+    invalid_range_is_inf: false

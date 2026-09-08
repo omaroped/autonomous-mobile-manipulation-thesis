@@ -9,6 +9,18 @@ die Raedern und Steuerscharnier im vorderen Achse, und auch die hinten Raedern. 
 <robot name="limo_ackermann" xmlns:xacro="http://www.ros.org/wiki/xacro">
 
     <xacro:arg name="drive_mode" default="diff"/>
+    <!-- Where wheel odometry comes from. 1 = WORLD: the plugin reads the model's
+         true pose out of Gazebo, so /odom is exact and never drifts. 0 = ENCODER:
+         odometry is integrated from actual wheel rotation, so it slips and drifts
+         the way a real LIMO does.
+
+         ENCODER REQUIRES localization:=amcl. Ground-truth localization publishes a
+         FIXED zero map->odom transform, which is only correct while odom cannot
+         drift; with ENCODER the drift accumulates behind that frozen transform and
+         nothing corrects it, so the robot's believed map pose separates from reality
+         and navigation goals go progressively wrong. nav_pick.launch.py refuses the
+         combination rather than letting it degrade silently. -->
+    <xacro:arg name="odometry_source" default="1"/>
     <xacro:property name="drive_mode" value="$(arg drive_mode)"/>
 
     <!-- ******************************** Paramenten zu definieren ************************************* -->
@@ -303,7 +315,10 @@ die Raedern und Steuerscharnier im vorderen Achse, und auch die hinten Raedern. 
                 <wheel_diameter>0.09</wheel_diameter>        <!-- 2 × 0.045 m radius -->
                 <wheel_diameter>0.09</wheel_diameter>
                 <max_wheel_torque>20</max_wheel_torque>
-                <max_wheel_acceleration>1.0</max_wheel_acceleration>
+                <!-- 1.0 rad/s^2 was a ~1 s ramp to reach even 0.5 rad/s of body
+                     rotation, so short docking corrections never reached their
+                     commanded speed. Raised so the base responds promptly. -->
+                <max_wheel_acceleration>5.0</max_wheel_acceleration>
                 <command_topic>cmd_vel</command_topic>
                 <publish_odom>true</publish_odom>
                 <publish_odom_tf>true</publish_odom_tf>
@@ -311,7 +326,7 @@ die Raedern und Steuerscharnier im vorderen Achse, und auch die hinten Raedern. 
                 <odometry_topic>odom</odometry_topic>
                 <odometry_frame>odom</odometry_frame>
                 <robot_base_frame>base_footprint</robot_base_frame>
-                <odometry_source>1</odometry_source>
+                <odometry_source>$(arg odometry_source)</odometry_source>
             </plugin>
         </gazebo>
     </xacro:macro>

@@ -1,3 +1,27 @@
+# IK solver for the myCobot 280 arm.
+#
+# KDL, restored 2026-08-25 after pick_ik was tried and did not work on this arm.
+#
+# pick_ik attempt (kept here so it is not retried blindly): switched on 2026-08-25 to
+# get seed-consistent IK, because KDL discards the seed near the reach boundary and
+# returns an arbitrary branch (measured: IK seeded with the arm's EXACT current joint
+# values still came back 1.6363 rad away). pick_ik failed to find ANY solution for the
+# hover pose in either mode -- "RRTConnect: Unable to sample any valid states for goal
+# tree" on every attempt, every hover clearance failing, pick aborting. Tried both
+# mode: local (wrong -- OMPL's goal sampler seeds randomly, and local is gradient
+# descent from the seed) and mode: global with stock tolerances. Both failed.
+# Not investigated further: KDL plans this pose successfully, so the working
+# configuration was restored rather than spending more runs on the solver.
+#
+# The branch-flip problem KDL causes is instead handled downstream, in
+# nav_pick_orchestrator.py:
+#   - revolute_jump_threshold on the Cartesian request, so a branch flip TRUNCATES the
+#     path and falls back visibly instead of executing a silent joint-space swing
+#   - CART_MAX_STEP 2 mm, keeping each IK seed close to the last so KDL's random
+#     restarts fire less often
+#   - solve_ik_nearest(), which samples IK several times and keeps the solution closest
+#     to the arm's current configuration
+#   - a path diag log line reporting joint travel and largest single-step jump per move
 arm:
   kinematics_solver: kdl_kinematics_plugin/KDLKinematicsPlugin
   kinematics_solver_search_resolution: 0.005

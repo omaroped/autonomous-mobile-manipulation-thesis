@@ -8,8 +8,19 @@ world pose once, then hold it there via /set_entity_state at 50 Hz (twist zeroed
 This is test-only and legitimate — a real robot is parked/braked while it grasps.
 
 Requires libgazebo_ros_state.so to be loaded in gzserver (added in
-ackermann_gazebo.launch.py). Only used by arm_grasp_test.launch.py, never by the
-real pipeline, so it never prevents the robot from driving.
+ackermann_gazebo.launch.py).
+
+CORRECTED 2026-08-25: this docstring used to claim the pin was "only used by
+arm_grasp_test.launch.py, never by the real pipeline". That is false and has been
+for a while -- nav_pick.launch.py starts this node, and nav_pick_orchestrator
+calls pin_base() before every grasp AND every place, unpinning only to drive. So
+every placement-error figure recorded in data/metrics_*.csv was measured with the
+base artificially rigid.
+
+That matters because a real LIMO PRO has no brake and no /set_entity_state: the
+arm's reaction force does move it, and nothing puts it back. Disable the hold with
+`base_pin_enabled:=false` and measure the difference with base_drift_probe -- see
+docs/SIM2REAL_base_pin_analysis.md.
 """
 import time
 import math
